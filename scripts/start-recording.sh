@@ -4,6 +4,9 @@
 
 set -e
 
+# Ensure Homebrew paths are available (needed when called from MeetingBar/AppleScript)
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
@@ -53,8 +56,17 @@ AUDIO_FILE="$RECORDINGS_DIR/${FILENAME}.wav"
 echo "Starting recording for: $MEETING_NAME"
 echo "File: $AUDIO_FILE"
 
-# Find the audio device index
-DEVICE_INFO=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -n "$AUDIO_DEVICE" | head -1)
+# Find the audio device index (with retry for slow device initialization)
+DEVICE_INFO=""
+for attempt in 1 2 3 4 5; do
+    DEVICE_INFO=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -n "$AUDIO_DEVICE" | head -1)
+    if [ -n "$DEVICE_INFO" ]; then
+        break
+    fi
+    echo "Waiting for audio device (attempt $attempt/5)..."
+    sleep 1
+done
+
 if [ -z "$DEVICE_INFO" ]; then
     echo "ERROR: Audio device '$AUDIO_DEVICE' not found."
     echo ""
