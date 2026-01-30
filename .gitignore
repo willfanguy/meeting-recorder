@@ -1,0 +1,11 @@
+# User configuration (contains local paths)
+config.sh
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+/tmp/
