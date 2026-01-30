@@ -92,9 +92,11 @@ echo "Using audio device [$DEVICE_NUM]: $AUDIO_DEVICE"
 # -ar 16000: 16kHz sample rate (optimal for Whisper)
 # -ac 1: mono (sufficient for speech)
 # Record all channels from aggregate device and mix down to mono
-# This captures both BlackHole (system audio) and microphone inputs
+# Channel layout: 0-1 = BlackHole (Zoom audio), 2-3 = mic (your voice)
+# Mic is ~20dB quieter than BlackHole, so boost it 8x to balance
+# alimiter prevents clipping from the boosted signal
 ffmpeg -y -f avfoundation -i ":${DEVICE_NUM}" \
-    -af "pan=mono|c0=0.5*c0+0.5*c1+c2+c3" \
+    -af "pan=mono|c0=0.5*c0+0.5*c1+8*c2+8*c3,alimiter=limit=0.9" \
     -c:a pcm_s16le -ar 16000 \
     "$AUDIO_FILE" \
     > /tmp/ffmpeg-recording.log 2>&1 &
