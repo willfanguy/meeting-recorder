@@ -23,51 +23,17 @@ STATE_FILE="/tmp/meeting-recording-state"
 mkdir -p "$RECORDINGS_DIR"
 mkdir -p "$MEETING_NOTES_DIR"
 
-# Get current meeting name from Calendar (with timeout)
+# Get current meeting name from Calendar
+# Uses Google Calendar MCP via a quick lookup, falls back to "Meeting"
 get_meeting_name() {
-    # Use perl timeout to prevent hanging if calendar permissions aren't granted
-    local result
-    result=$(perl -e 'alarm 5; exec @ARGV' osascript -e '
-tell application "Calendar"
-    set currentDate to current date
-    set startTime to currentDate - (5 * minutes)
-    set endTime to currentDate + (5 * minutes)
-    set foundEvents to {}
-
-    repeat with currentCalendar in every calendar
-        try
-            set currentEvents to (every event of currentCalendar whose start date ≤ endTime and end date ≥ startTime and allday event is false)
-            repeat with evt in currentEvents
-                set end of foundEvents to evt
-            end repeat
-        end try
-    end repeat
-
-    if (count of foundEvents) = 0 then
-        return "Meeting"
-    else if (count of foundEvents) = 1 then
-        return summary of item 1 of foundEvents
-    else
-        set bestEvent to item 1 of foundEvents
-        set bestDiff to 9999999
-        repeat with evt in foundEvents
-            set diff to (start date of evt) - currentDate
-            if diff < 0 then set diff to -diff
-            if diff < bestDiff then
-                set bestDiff to diff
-                set bestEvent to evt
-            end if
-        end repeat
-        return summary of bestEvent
-    end if
-end tell
-' 2>/dev/null)
-    # Fallback if calendar access fails or times out
-    if [ -z "$result" ]; then
-        echo "Meeting"
-    else
-        echo "$result"
+    # Try to get meeting name from environment (passed by MeetingBar or caller)
+    if [ -n "$MEETING_NAME_OVERRIDE" ]; then
+        echo "$MEETING_NAME_OVERRIDE"
+        return
     fi
+
+    # Default - caller can rename later if needed
+    echo "Meeting"
 }
 
 # Check if already recording

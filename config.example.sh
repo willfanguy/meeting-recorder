@@ -17,6 +17,6 @@ WHISPER_MODEL="$HOME/.local/share/whisper-models/ggml-base.en.bin"
 # This device should combine your microphone + BlackHole for capturing both sides of the call
 AUDIO_DEVICE="Meeting Recording Input"
 
-# Optional: Run a command after transcription completes
-# Example: trigger a meeting intelligence processor
-# POST_TRANSCRIBE_COMMAND=""
+# Run Claude meeting intelligence processor after transcription (true/false)
+# Requires Claude Code CLI to be installed and configured
+RUN_MEETING_INTELLIGENCE="true"

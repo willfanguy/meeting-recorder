@@ -66,7 +66,65 @@ if [ "$FILE_SIZE" -lt 10000 ]; then
     echo "Check /tmp/ffmpeg-recording.log for errors."
 fi
 
-echo "Recording saved: $AUDIO_FILE ($(numfmt --to=iec $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
+echo "Recording saved: $AUDIO_FILE"
+
+# Look up actual meeting name from calendar (we have more time at stop)
+echo "Looking up meeting name from calendar..."
+CALENDAR_NAME=$(osascript -e '
+tell application "Calendar"
+    set currentDate to current date
+    set startTime to currentDate - (90 * minutes)
+    set endTime to currentDate + (5 * minutes)
+    set foundEvents to {}
+
+    repeat with currentCalendar in every calendar
+        try
+            set currentEvents to (every event of currentCalendar whose start date ≤ endTime and end date ≥ startTime and allday event is false)
+            repeat with evt in currentEvents
+                set end of foundEvents to evt
+            end repeat
+        end try
+    end repeat
+
+    if (count of foundEvents) = 0 then
+        return ""
+    else if (count of foundEvents) = 1 then
+        return summary of item 1 of foundEvents
+    else
+        set bestEvent to item 1 of foundEvents
+        set bestDiff to 9999999
+        repeat with evt in foundEvents
+            set diff to (start date of evt) - currentDate
+            if diff < 0 then set diff to -diff
+            if diff < bestDiff then
+                set bestDiff to diff
+                set bestEvent to evt
+            end if
+        end repeat
+        return summary of bestEvent
+    end if
+end tell
+' 2>/dev/null || echo "")
+
+# If we got a calendar name and the file is currently named "Meeting", rename it
+if [ -n "$CALENDAR_NAME" ] && [ "$CALENDAR_NAME" != "" ] && [[ "$MEETING_NAME" == "Meeting" ]]; then
+    echo "Found calendar event: $CALENDAR_NAME"
+    MEETING_NAME="$CALENDAR_NAME"
+    SAFE_NAME=$(echo "$MEETING_NAME" | tr '/:*?"<>|\\' '-' | tr -s '-')
+    TIMESTAMP=$(echo "$FILENAME" | sed 's/.*- //')
+    NEW_FILENAME="${SAFE_NAME} - ${TIMESTAMP}"
+    NEW_AUDIO_FILE="$RECORDINGS_DIR/${NEW_FILENAME}.wav"
+
+    if [ "$AUDIO_FILE" != "$NEW_AUDIO_FILE" ]; then
+        echo "Renaming to: $NEW_FILENAME"
+        mv "$AUDIO_FILE" "$NEW_AUDIO_FILE"
+        AUDIO_FILE="$NEW_AUDIO_FILE"
+        FILENAME="$NEW_FILENAME"
+    fi
+else
+    echo "Using original name: $MEETING_NAME"
+fi
+
 osascript -e "display notification \"Transcribing...\" with title \"Meeting Recorder\""
 
 # Transcribe with Whisper
@@ -83,10 +141,6 @@ if [ ! -f "$WHISPER_MODEL" ]; then
 fi
 
 # Run whisper-cli
-# -m: model file
-# -otxt: output as text file
-# -l en: English language
-# -t 4: 4 threads
 whisper-cli -m "$WHISPER_MODEL" -otxt -l en -t 4 "$AUDIO_FILE" 2>&1 | tee /tmp/whisper-output.log
 
 # whisper-cli creates output with same name as input + .txt
@@ -119,21 +173,9 @@ cat > "$NOTE_FILE" <<NOTEEOF
 
 $(cat "$TRANSCRIPT_FILE")
 
----
-
-## Summary
-
-*Add meeting summary here*
-
 NOTEEOF
 
 echo "Meeting note created: $NOTE_FILE"
-
-# Run post-transcribe command if configured
-if [ -n "$POST_TRANSCRIBE_COMMAND" ]; then
-    echo "Running post-transcribe command..."
-    eval "$POST_TRANSCRIBE_COMMAND"
-fi
 
 # Final notification
 osascript -e "display notification \"Ready: $MEETING_NAME\" with title \"Meeting Recorder\" sound name \"Glass\""
@@ -144,3 +186,20 @@ echo "=== Recording Complete ==="
 echo "Audio:      $AUDIO_FILE"
 echo "Transcript: $TRANSCRIPT_FILE"
 echo "Note:       $NOTE_FILE"
+
+# Run Claude meeting intelligence processor if enabled
+if [ "${RUN_MEETING_INTELLIGENCE:-true}" = "true" ]; then
+    echo ""
+    echo "Running meeting intelligence processor..."
+    osascript -e "display notification \"Processing with AI...\" with title \"Meeting Recorder\""
+
+    # Run Claude in background to process the meeting note
+    claude -p "Process this meeting transcript and add an intelligence summary to the end of the file. The file is at: $NOTE_FILE" \
+        --agent meeting-intelligence-processor \
+        --dangerously-skip-permissions \
+        > /tmp/meeting-intelligence.log 2>&1 &
+
+    CLAUDE_PID=$!
+    echo "Meeting intelligence processing started in background (PID: $CLAUDE_PID)"
+    echo "Check /tmp/meeting-intelligence.log for progress"
+fi
