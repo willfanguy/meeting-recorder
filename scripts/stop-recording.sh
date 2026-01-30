@@ -68,61 +68,78 @@ fi
 
 echo "Recording saved: $AUDIO_FILE"
 
-# Look up actual meeting name from calendar (we have more time at stop)
-echo "Looking up meeting name from calendar..."
-CALENDAR_NAME=$(osascript -e '
-tell application "Calendar"
-    set currentDate to current date
-    set startTime to currentDate - (90 * minutes)
-    set endTime to currentDate + (5 * minutes)
-    set foundEvents to {}
+# Look up actual meeting name from Obsidian daily note (fast)
+echo "Looking up meeting name..."
+CALENDAR_NAME=""
 
-    repeat with currentCalendar in every calendar
-        try
-            set currentEvents to (every event of currentCalendar whose start date ≤ endTime and end date ≥ startTime and allday event is false)
-            repeat with evt in currentEvents
-                set end of foundEvents to evt
-            end repeat
-        end try
-    end repeat
+# Get today's daily note path
+TODAY_DATE=$(date "+%Y-%m-%d")
+TODAY_DAY=$(date "+%a")
+DAILY_NOTE="/Users/will/Vaults/HigherJump/4. Resources/Daily Notes/${TODAY_DATE} ${TODAY_DAY} - Daily.md"
 
-    if (count of foundEvents) = 0 then
-        return ""
-    else if (count of foundEvents) = 1 then
-        return summary of item 1 of foundEvents
-    else
-        set bestEvent to item 1 of foundEvents
-        set bestDiff to 9999999
-        repeat with evt in foundEvents
-            set diff to (start date of evt) - currentDate
-            if diff < 0 then set diff to -diff
-            if diff < bestDiff then
-                set bestDiff to diff
-                set bestEvent to evt
-            end if
-        end repeat
-        return summary of bestEvent
-    end if
-end tell
-' 2>/dev/null || echo "")
+if [ -f "$DAILY_NOTE" ]; then
+    # Get current time in minutes since midnight for comparison
+    CURRENT_HOUR=$(date "+%H")
+    CURRENT_MIN=$(date "+%M")
+    CURRENT_MINS=$((10#$CURRENT_HOUR * 60 + 10#$CURRENT_MIN))
+
+    # Parse schedule lines and find matching meeting
+    while IFS= read -r line; do
+        # Extract start and end time (HH:MM - HH:MM)
+        if [[ $line =~ ([0-9]{1,2}):([0-9]{2})\ -\ ([0-9]{1,2}):([0-9]{2}) ]]; then
+            START_H="${BASH_REMATCH[1]}"
+            START_M="${BASH_REMATCH[2]}"
+            END_H="${BASH_REMATCH[3]}"
+            END_M="${BASH_REMATCH[4]}"
+
+            START_MINS=$((10#$START_H * 60 + 10#$START_M))
+            END_MINS=$((10#$END_H * 60 + 10#$END_M))
+
+            # Check if current time falls within this meeting (with 15 min buffer after)
+            if [ $CURRENT_MINS -ge $START_MINS ] && [ $CURRENT_MINS -le $((END_MINS + 15)) ]; then
+                # Extract meeting name from [[...Meeting Notes/...|Display Name]] format using sed
+                POTENTIAL_NAME=$(echo "$line" | sed -n 's/.*Meeting Notes\/[^|]*|\([^]]*\)].*/\1/p')
+                if [ -n "$POTENTIAL_NAME" ]; then
+                    CALENDAR_NAME="$POTENTIAL_NAME"
+                    echo "Found in daily note: $CALENDAR_NAME"
+                    break
+                fi
+            fi
+        fi
+    done < "$DAILY_NOTE"
+fi
+
+if [ -z "$CALENDAR_NAME" ]; then
+    echo "No matching meeting found in daily note"
+fi
 
 # If we got a calendar name and the file is currently named "Meeting", rename it
 if [ -n "$CALENDAR_NAME" ] && [ "$CALENDAR_NAME" != "" ] && [[ "$MEETING_NAME" == "Meeting" ]]; then
     echo "Found calendar event: $CALENDAR_NAME"
     MEETING_NAME="$CALENDAR_NAME"
-    SAFE_NAME=$(echo "$MEETING_NAME" | tr '/:*?"<>|\\' '-' | tr -s '-')
-    TIMESTAMP=$(echo "$FILENAME" | sed 's/.*- //')
-    NEW_FILENAME="${SAFE_NAME} - ${TIMESTAMP}"
-    NEW_AUDIO_FILE="$RECORDINGS_DIR/${NEW_FILENAME}.wav"
+fi
 
-    if [ "$AUDIO_FILE" != "$NEW_AUDIO_FILE" ]; then
-        echo "Renaming to: $NEW_FILENAME"
-        mv "$AUDIO_FILE" "$NEW_AUDIO_FILE"
-        AUDIO_FILE="$NEW_AUDIO_FILE"
-        FILENAME="$NEW_FILENAME"
-    fi
-else
-    echo "Using original name: $MEETING_NAME"
+# Generate unique filename
+SAFE_NAME=$(echo "$MEETING_NAME" | tr '/:*?"<>|\\' '-' | tr -s '-')
+TIMESTAMP=$(echo "$FILENAME" | sed 's/.*- //')
+NEW_FILENAME="${SAFE_NAME} - ${TIMESTAMP}"
+
+# Ensure unique filename by checking if meeting note already exists
+COUNTER=0
+BASE_FILENAME="$NEW_FILENAME"
+while [ -f "$MEETING_NOTES_DIR/${NEW_FILENAME}.md" ]; do
+    COUNTER=$((COUNTER + 1))
+    NEW_FILENAME="${BASE_FILENAME} (${COUNTER})"
+    echo "File exists, trying: $NEW_FILENAME"
+done
+
+NEW_AUDIO_FILE="$RECORDINGS_DIR/${NEW_FILENAME}.wav"
+
+if [ "$AUDIO_FILE" != "$NEW_AUDIO_FILE" ]; then
+    echo "Renaming to: $NEW_FILENAME"
+    mv "$AUDIO_FILE" "$NEW_AUDIO_FILE"
+    AUDIO_FILE="$NEW_AUDIO_FILE"
+    FILENAME="$NEW_FILENAME"
 fi
 
 osascript -e "display notification \"Transcribing...\" with title \"Meeting Recorder\""
