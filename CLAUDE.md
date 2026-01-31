@@ -1,178 +1,203 @@
-# Meeting Recorder - Claude Code Context
+# CLAUDE.md
 
-## Overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This project records and transcribes meetings, integrating with the Obsidian productivity system via morning-plan-processor and meeting-intelligence-processor agents.
+## Project Overview
 
-**Current approach:** QuickTime audio recording via AppleScript (more reliable than ffmpeg/BlackHole).
+Meeting Recorder is a macOS utility that automatically records and transcribes meetings. It integrates with MeetingBar to start/stop recording when joining/leaving meetings, uses ffmpeg to capture system audio + microphone, and processes the recording with Whisper (OpenAI's speech-to-text) for local transcription.
 
-## File Naming Convention
+The tool outputs markdown meeting notes with transcripts, saved to an Obsidian vault for note-taking.
 
-**Standard format:** `YYYY-MM-DD HHmm - Sanitized Title`
+## Architecture
 
-Examples:
-- `2026-02-02 1100 - AIF Stand up.m4a`
-- `2026-02-02 1100 - AIF Stand up.md`
+### Core Components
 
-**Critical:** The timestamp comes from the **calendar event's start time**, NOT the current time when recording starts. This ensures filenames match the links created by morning-plan-processor.
+1. **Recording Engine** (`scripts/start-recording.sh`)
+   - Uses ffmpeg to capture audio from an Aggregate Device (mic + BlackHole virtual audio device)
+   - Records at 16kHz mono with 16-bit PCM (optimized for Whisper)
+   - Implements audio channel mixing: BlackHole (system audio) on channels 0-1, microphone on channels 2-3
+   - Boosts microphone signal 8x (with limiter) to balance against louder system audio
+   - Manages state via `/tmp/meeting-recording-state` file to track active recording
+   - Validates audio device availability with retry logic (devices can be slow to initialize)
 
-## Integration with Obsidian Productivity System
+2. **Recording Termination** (`scripts/stop-recording.sh`)
+   - Gracefully stops ffmpeg recording process
+   - **Smart meeting name lookup**: Queries the user's Obsidian daily note to find the actual meeting name by matching current time against scheduled events
+   - Falls back to generic "Meeting" name if no calendar lookup succeeds
+   - Handles filename conflicts by appending counter suffix
+   - Invokes Whisper transcription via `whisper-cli`
+   - Generates markdown note file with transcript and audio file link
+   - Optionally launches Claude via `claude` CLI for meeting intelligence processing (background job)
 
-### Workflow
+3. **Status Monitor** (`scripts/status.sh`)
+   - Checks if recording is currently active
+   - Displays elapsed time and meeting details
 
-1. **Morning (8:30am):** `morning-plan-processor` agent runs, creates daily note with meeting links:
-   ```markdown
-   - [ ] 11:00 - 11:30 [[4. Resources/Meeting Notes/2026-02-02 1100 - AIF Stand up|AIF Stand up]]
-   ```
+4. **MeetingBar Integration** (`scripts/MeetingBar-Start.applescript`, `scripts/MeetingBar-Stop.applescript`)
+   - AppleScript wrappers that trigger recording scripts when joining/leaving meetings
+   - Paths must match your installation directory (currently hardcoded to `/Repos/personal/meeting-recorder/`)
 
-2. **Meeting start:** User triggers `quicktime-start-recording.applescript` (via Raycast or MeetingBar):
-   - Opens QuickTime Player
-   - Starts new audio recording
-   - Minimizes window
+### Configuration
 
-3. **Meeting end:** User triggers `quicktime-stop-recording.applescript`:
-   - Stops QuickTime recording
-   - Reads daily note to find meeting name for current hour
-   - Saves as `YYYY-MM-DD HHmm - Meeting Name.m4a`
-   - Triggers `transcribe-and-process.sh` in background
+- `config.sh` (created from `config.example.sh` during install)
+- Key settings:
+  - `RECORDINGS_DIR`: Where audio files are saved (default: `~/Documents/Meeting Recordings`)
+  - `MEETING_NOTES_DIR`: Where markdown notes are saved (default: `~/Documents/Meeting Notes`)
+  - `WHISPER_MODEL`: Path to Whisper model binary (default: `~/.local/share/whisper-models/ggml-base.en.bin`)
+  - `AUDIO_DEVICE`: Name of Aggregate Device for audio capture (must match Audio MIDI Setup)
+  - `RUN_MEETING_INTELLIGENCE`: Boolean to enable/disable AI post-processing
 
-4. **Post-processing:** `transcribe-and-process.sh`:
-   - Converts m4a to wav
-   - Transcribes with Whisper (large-v3-q5_0, with VAD and context prompt)
-   - Creates meeting note with frontmatter
-   - Runs `meeting-intelligence-processor` for AI summary
+### Data Flow
 
-5. **Result:** The Obsidian link from step 1 resolves to the meeting note with transcript and AI summary.
+1. User joins meeting (MeetingBar trigger)
+2. `MeetingBar-Start.applescript` → `start-recording.sh`
+3. ffmpeg starts recording from Aggregate Device to WAV file
+4. State saved to `/tmp/meeting-recording-state`
+5. User leaves meeting (MeetingBar trigger)
+6. `MeetingBar-Stop.applescript` → `stop-recording.sh`
+7. ffmpeg stops gracefully
+8. Meeting name looked up from Obsidian daily note (time-based matching)
+9. Audio file renamed with meeting name
+10. `whisper-cli` transcribes WAV → TXT
+11. Markdown note created with transcript and audio link
+12. (Optional) Claude CLI invoked in background for meeting intelligence processing
 
-### Why Event Start Time Matters
+## Development Setup
 
-If user joins at 10:58 for an 11:00 meeting:
-- ❌ Wrong: `2026-02-02 1058 - ...` (current time)
-- ✅ Correct: `2026-02-02 1100 - ...` (event time)
+### Installation
 
-Using current time would break the link created by morning-plan-processor.
-
-## File Locations
-
-| Type | Path |
-|------|------|
-| Audio recordings | `~/Meeting Transcriptions/` |
-| Processed recordings | `~/Meeting Transcriptions/processed/` |
-| Meeting notes | `~/Vaults/HigherJump/4. Resources/Meeting Notes/` |
-| Daily notes | `~/Vaults/HigherJump/4. Resources/Daily Notes/` |
-
-## Meeting Note Frontmatter
-
-```yaml
----
-title: "Meeting Title"
-date: 2026-02-02
-time: "11:00"
-event_id: "quicktime-20260202110000"
-status: transcribed
-recording: "/Users/will/Meeting Transcriptions/2026-02-02 1100 - AIF Stand up.m4a"
-attendees: []
-tags:
-  - meeting
----
+```bash
+./install.sh
 ```
 
-### Status Values
+This installs:
+- ffmpeg (audio recording)
+- BlackHole 2ch (virtual audio device for system audio capture)
+- whisper-cpp (local speech-to-text)
+- Whisper base.en model (147MB)
 
-- `created` - File exists, no content
-- `recording` - Recording in progress
-- `transcribed` - Transcript added
-- `summarized` - AI summary added (by meeting-intelligence-processor)
-- `reviewed` - Human-reviewed
+After install, **reboot Mac** for BlackHole kernel extension to load.
 
-## Title Sanitization
+### Audio Setup (Post-Reboot)
 
-Applied to meeting titles for filenames:
-1. Remove control characters
-2. Replace `:`, `/`, `\`, `|`, `*`, `?`, `<`, `>` with `-`
-3. Collapse multiple spaces/dashes
-4. Trim leading/trailing spaces and dashes
+See `docs/POST_REBOOT_SETUP.md` for detailed steps. Requires:
+1. Multi-Output Device in Audio MIDI Setup (speakers + BlackHole) for hearing audio
+2. Aggregate Device in Audio MIDI Setup (mic + BlackHole) named "Meeting Recording Input" for recording
+3. MeetingBar preferences configured to run the AppleScripts
 
-## Zoom Team Chat Integration
+### Testing
 
-When Will saves the team chat from a Zoom meeting, it's stored at:
-`~/Documents/Zoom/YYYY-MM-DD HH.MM.SS Meeting Title/meeting_saved_new_chat.txt`
+```bash
+# Create config from template (if not already done)
+cp config.example.sh config.sh
 
-The `transcribe-and-process.sh` script automatically searches this directory for a chat matching the meeting's date and time. If found, it's appended to the meeting note as a `## Team Chat (Zoom)` section.
+# Manual recording test
+./scripts/start-recording.sh
+# ... speak into mic, play audio ...
+./scripts/stop-recording.sh
 
-**Matching logic:** Date + HH.MM from the Zoom folder against our HHMM time format. Falls back to hour-only matching if exact minute doesn't match.
+# Check status anytime
+./scripts/status.sh
+```
 
-The meeting-intelligence-processor also knows to check for Zoom chat — both in the meeting note (primary) and by searching the Zoom directory directly (fallback for notes not created by the recorder pipeline).
+## Common Tasks
 
-## Related Components
+### Debug Audio Device Issues
 
-- **morning-plan-processor** (`~/.claude/agents/morning-plan-processor.md`): Creates daily note with meeting links
-- **meeting-intelligence-processor** (`~/.claude/agents/meeting-intelligence-processor.md`): Adds AI summary to meeting notes
-- **Productivity config** (`~/Repos/personal/productivity/config/config.json`): Central config including `meetings` section
-- **Meeting naming spec** (`~/Repos/personal/productivity/config/meeting-naming-spec.md`): Full specification
+```bash
+# List available audio devices
+ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -A20 "audio devices"
+```
 
-## Scripts
+Device names must match exactly between Audio MIDI Setup and `config.sh`.
 
-### quicktime-start-recording.applescript
+### Change Whisper Model
 
-- Opens QuickTime Player
-- Creates new audio recording
-- Starts recording
-- Minimizes window to reduce distraction
-- Can be triggered from Raycast or MeetingBar
+Download a different model from [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) and update `WHISPER_MODEL` in `config.sh`:
 
-### quicktime-stop-recording.applescript
+```bash
+# Example: download small.en model for better accuracy
+curl -L -o ~/.local/share/whisper-models/ggml-small.en.bin \
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
+```
 
-- Stops QuickTime recording
-- Reads daily note to find meeting name for current hour
-- Exports as m4a with proper filename
-- Triggers transcribe-and-process.sh in background
+### Disable AI Processing
 
-### transcribe-and-process.sh
+Set `RUN_MEETING_INTELLIGENCE="false"` in `config.sh` to skip the background Claude processing step.
 
-- Converts m4a to wav (16kHz mono for Whisper)
-- Runs whisper-cli for transcription
-- Runs hallucination detection + retranscription if needed
-- **Applies domain corrections** (see below)
-- Creates meeting note with frontmatter and transcript
-- Runs meeting-intelligence-processor in background
+### Monitor Background AI Processing
 
-### apply-domain-corrections.py
+```bash
+tail -f /tmp/meeting-intelligence.log
+```
 
-Post-transcription correction of known domain-specific errors. Runs automatically
-after Whisper (or any future transcription engine) finishes.
+## Key Implementation Details
 
-- **Dictionary**: `scripts/domain-corrections.json` — organized by category (companies, products, domain terms, people)
-- **Behavior**: Case-insensitive whole-word matching, processes both .txt and .srt files
-- **Logging**: All corrections logged to `/tmp/meeting-recorder.log`
-- **Adding corrections**: Edit the JSON dictionary — no code changes needed. Add entries as `"wrong": "right"` under the appropriate category.
+### Audio Channel Mixing
 
-Common corrections include: "glass door" → "Glassdoor", "supermatters" → "SuperMatch", "co-complete" → "code complete", name spelling fixes for team members.
+The ffmpeg filter chain in `start-recording.sh:98-100` implements:
+```
+pan=mono|c0=0.5*c0+0.5*c1+8*c2+8*c3,alimiter=limit=0.9
+```
 
-## Archived Scripts
+- Channels 0-1: BlackHole (system audio from meeting) → average and use as base
+- Channels 2-3: Microphone (your voice) → boost 8x to balance against louder system audio
+- `alimiter`: Prevents clipping from the 8x boost
+- Output: Single mono channel at 16kHz
 
-Old ffmpeg/BlackHole approach scripts are in `scripts/archive/`. These were unreliable due to audio device routing issues (often captured silence instead of meeting audio).
+This is critical for quality transcription where both sides of the conversation are audible.
 
-## Troubleshooting
+### Meeting Name Lookup
 
-### Meeting note link doesn't resolve
+The daily note parsing in `stop-recording.sh:87-109` uses regex to:
+1. Find time ranges in format `HH:MM - HH:MM` in the daily note
+2. Match current time within that range (with 15-minute buffer after end time)
+3. Extract meeting name from Obsidian link format: `[[Meeting Notes/...|Display Name]]`
 
-Check that:
-1. Filename uses event start time, not current time
-2. Morning-plan-processor ran and created the link
-3. Filename sanitization matches between morning-plan and recording scripts
+This avoids relying on calendar APIs and uses the source of truth (Obsidian vault).
 
-### Transcript shows "You You You You..."
+### State Management
 
-This is Whisper hallucinating on silence. Check:
-1. Audio file has actual content: `ffmpeg -i file.m4a -af volumedetect -f null -`
-2. QuickTime was recording from correct input device
-3. Meeting audio was actually playing through speakers
+Active recording state is stored in `/tmp/meeting-recording-state` as shell variables:
+- `FFMPEG_PID`: Process ID for force-killing if needed
+- `AUDIO_FILE`: Full path to WAV file
+- `MEETING_NAME`: Initial meeting name (may change during stop)
+- `FILENAME`: Base filename (used to preserve timestamp during rename)
+- `START_TIME`: Recording start time for duration calculation
 
-See `meeting-transcription-debugging` skill for detailed diagnostics.
+## File Structure
 
-### QuickTime recording issues
+```
+meeting-recorder/
+├── CLAUDE.md                          # This file
+├── README.md                          # User-facing documentation
+├── config.example.sh                  # Configuration template
+├── install.sh                         # Dependency installer
+├── scripts/
+│   ├── start-recording.sh             # Begin recording (called by MeetingBar)
+│   ├── stop-recording.sh              # Stop, transcribe, create note (called by MeetingBar)
+│   ├── status.sh                      # Check active recording status
+│   ├── MeetingBar-Start.applescript   # AppleScript trigger for join event
+│   └── MeetingBar-Stop.applescript    # AppleScript trigger for leave event
+├── docs/
+│   └── POST_REBOOT_SETUP.md           # Post-reboot configuration checklist
+└── raycast/                           # (Optional Raycast extension integration)
+```
 
-- **No recording starts:** Check QuickTime has microphone permissions in System Settings
-- **Wrong audio source:** Set default input in System Settings > Sound before starting
-- **Recording already active:** Script checks for existing recordings and notifies
+## Dependencies
+
+- **ffmpeg**: Audio recording from macOS audio devices
+- **BlackHole 2ch**: Virtual audio device for capturing system audio
+- **whisper-cpp**: Local speech-to-text (compiled from OpenAI's Whisper)
+- **Whisper model file**: Binary model (ggml format, ~147MB for base.en)
+- **claude CLI**: Optional, for meeting intelligence post-processing
+- **Bash 4+**: All scripts use bash
+- **AppleScript/osascript**: For MeetingBar integration and notifications
+
+## Notes for Future Development
+
+- Paths to Obsidian vault are currently hardcoded in `stop-recording.sh:78` - consider making configurable
+- AppleScript paths in MeetingBar trigger files are hardcoded and must be updated manually for different installations
+- Audio channel boost factor (8x) is tuned for typical Zoom/Meet scenarios but may need adjustment for different hardware
+- The 15-minute buffer after meeting end time in daily note lookup is hardcoded but could be configurable
+- Meeting intelligence processing runs in background without error handling - failures are logged but don't block the main workflow
