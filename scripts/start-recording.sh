@@ -22,9 +22,27 @@ source "$CONFIG_FILE"
 # State file for tracking current recording
 STATE_FILE="/tmp/meeting-recording-state"
 
+# Multi-output device for routing audio to both speakers and BlackHole
+MULTI_OUTPUT_DEVICE="Meeting Output"
+
 # Ensure directories exist
 mkdir -p "$RECORDINGS_DIR"
 mkdir -p "$MEETING_NOTES_DIR"
+
+# Switch system audio output to multi-output device (so BlackHole captures meeting audio)
+echo "Switching audio output for recording..."
+ORIGINAL_OUTPUT=$(SwitchAudioSource -t output -c 2>/dev/null || echo "")
+if [ -n "$ORIGINAL_OUTPUT" ]; then
+    echo "Current output: $ORIGINAL_OUTPUT"
+    if SwitchAudioSource -t output -s "$MULTI_OUTPUT_DEVICE" 2>/dev/null; then
+        echo "Switched to: $MULTI_OUTPUT_DEVICE"
+    else
+        echo "WARNING: Could not switch to $MULTI_OUTPUT_DEVICE - recording may not capture meeting audio"
+        echo "Make sure the multi-output device exists in Audio MIDI Setup"
+    fi
+else
+    echo "WARNING: Could not detect current audio output device"
+fi
 
 # Get current meeting name from Calendar
 # Uses Google Calendar MCP via a quick lookup, falls back to "Meeting"
@@ -92,11 +110,10 @@ echo "Using audio device [$DEVICE_NUM]: $AUDIO_DEVICE"
 # -ar 16000: 16kHz sample rate (optimal for Whisper)
 # -ac 1: mono (sufficient for speech)
 # Record all channels from aggregate device and mix down to mono
-# Channel layout: 0-1 = BlackHole (Zoom audio), 2-3 = mic (your voice)
-# Mic is ~20dB quieter than BlackHole, so boost it 8x to balance
-# alimiter prevents clipping from the boosted signal
+# Uses amerge to combine all input channels, then downmix to mono
+# This works regardless of how many channels the aggregate device has
 ffmpeg -y -f avfoundation -i ":${DEVICE_NUM}" \
-    -af "pan=mono|c0=0.5*c0+0.5*c1+8*c2+8*c3,alimiter=limit=0.9" \
+    -af "aresample=async=1,pan=1c|c0=c0+c1+c2+c3+c4+c5,alimiter=limit=0.9" \
     -c:a pcm_s16le -ar 16000 \
     "$AUDIO_FILE" \
     > /tmp/ffmpeg-recording.log 2>&1 &
@@ -118,6 +135,7 @@ AUDIO_FILE="$AUDIO_FILE"
 MEETING_NAME="$MEETING_NAME"
 FILENAME="$FILENAME"
 START_TIME="$(date "+%Y-%m-%d %H:%M:%S")"
+ORIGINAL_OUTPUT="$ORIGINAL_OUTPUT"
 STATEEOF
 
 echo "Recording started (PID: $FFMPEG_PID)"
