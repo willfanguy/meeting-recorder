@@ -50,6 +50,12 @@ if kill -0 "$FFMPEG_PID" 2>/dev/null; then
     fi
 fi
 
+# Restore original audio output device
+if [ -n "$ORIGINAL_OUTPUT" ]; then
+    echo "Restoring audio output to: $ORIGINAL_OUTPUT"
+    SwitchAudioSource -t output -s "$ORIGINAL_OUTPUT" 2>/dev/null || echo "WARNING: Could not restore audio output"
+fi
+
 # Clean up state file
 rm -f "$STATE_FILE"
 
@@ -119,10 +125,11 @@ if [ -n "$CALENDAR_NAME" ] && [ "$CALENDAR_NAME" != "" ] && [[ "$MEETING_NAME" =
     MEETING_NAME="$CALENDAR_NAME"
 fi
 
-# Generate unique filename
-SAFE_NAME=$(echo "$MEETING_NAME" | tr '/:*?"<>|\\' '-' | tr -s '-')
-TIMESTAMP=$(echo "$FILENAME" | sed 's/.*- //')
-NEW_FILENAME="${SAFE_NAME} - ${TIMESTAMP}"
+# Generate unique filename using standardized format: YYYY-MM-DD HHmm - Title
+SAFE_NAME=$(echo "$MEETING_NAME" | sed 's/[[:cntrl:]]//g' | tr '/:*?"<>|\\' '-' | tr -s '[:space:]' ' ' | tr -s '-' | sed 's/^[- ]*//;s/[- ]*$//')
+# Extract the date-time portion from existing filename (format: YYYY-MM-DD HHmm - ...)
+TIMESTAMP=$(echo "$FILENAME" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4}' || date "+%Y-%m-%d %H%M")
+NEW_FILENAME="${TIMESTAMP} - ${SAFE_NAME}"
 
 # Ensure unique filename by checking if meeting note already exists
 COUNTER=0
@@ -174,14 +181,32 @@ fi
 
 echo "Transcript saved: $TRANSCRIPT_FILE"
 
-# Create meeting note
+# Create meeting note with standardized frontmatter
 TODAY=$(date "+%Y-%m-%d")
+TIME_DISPLAY=$(date "+%I:%M %p %Z" | sed 's/^0//')
+# Extract time from timestamp (HHmm -> HH:mm)
+TIME_24H=$(echo "$TIMESTAMP" | grep -oE '[0-9]{4}$' | sed 's/\(..\)\(..\)/\1:\2/')
+# Generate unique event ID for duplicate detection
+EVENT_ID="recording-$(date +%Y%m%d%H%M%S)"
 NOTE_FILE="$MEETING_NOTES_DIR/${FILENAME}.md"
 
 cat > "$NOTE_FILE" <<NOTEEOF
+---
+title: "$MEETING_NAME"
+date: $TODAY
+time: "$TIME_24H"
+event_id: "$EVENT_ID"
+status: transcribed
+recording: "$AUDIO_FILE"
+attendees: []
+tags:
+  - meeting
+---
+
 # $MEETING_NAME
 
 **Date:** $TODAY
+**Time:** $TIME_DISPLAY
 **Recording:** [Audio File](file://${AUDIO_FILE// /%20})
 
 ---
@@ -211,7 +236,7 @@ if [ "${RUN_MEETING_INTELLIGENCE:-true}" = "true" ]; then
     osascript -e "display notification \"Processing with AI...\" with title \"Meeting Recorder\""
 
     # Run Claude in background to process the meeting note
-    claude -p "Process this meeting transcript and add an intelligence summary to the end of the file. The file is at: $NOTE_FILE" \
+    /Users/will/.local/bin/claude -p "Process this meeting transcript and add an intelligence summary to the end of the file. The file is at: $NOTE_FILE" \
         --agent meeting-intelligence-processor \
         --dangerously-skip-permissions \
         > /tmp/meeting-intelligence.log 2>&1 &

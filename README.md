@@ -65,16 +65,19 @@ Edit `config.sh` to customize:
 
 ```bash
 # Where to save audio recordings
-RECORDINGS_DIR="$HOME/Documents/Meeting Recordings"
+RECORDINGS_DIR="$HOME/Meeting Transcriptions"
 
-# Where to save meeting notes/transcripts
-MEETING_NOTES_DIR="$HOME/Documents/Meeting Notes"
+# Where to save meeting notes/transcripts (Obsidian vault)
+MEETING_NOTES_DIR="$HOME/Vaults/HigherJump/4. Resources/Meeting Notes"
 
 # Whisper model (base.en is a good balance of speed/accuracy)
 WHISPER_MODEL="$HOME/.local/share/whisper-models/ggml-base.en.bin"
 
 # Must match your Aggregate Device name
 AUDIO_DEVICE="Meeting Recording Input"
+
+# Run Claude meeting intelligence processor after transcription (true/false)
+RUN_MEETING_INTELLIGENCE="true"
 ```
 
 ## Usage
@@ -104,11 +107,17 @@ Recordings start automatically when you join and transcribe when you leave.
 
 Each meeting creates:
 
-1. **Audio file**: `~/Documents/Meeting Recordings/Meeting Name - 2024-01-15_1400.wav`
-2. **Transcript**: `~/Documents/Meeting Recordings/Meeting Name - 2024-01-15_1400.txt`
-3. **Meeting note**: `~/Documents/Meeting Notes/Meeting Name - 2024-01-15_1400.md`
+1. **Audio file**: `~/Meeting Transcriptions/2024-01-15 1400 - Meeting Name.wav`
+2. **Transcript**: `~/Meeting Transcriptions/2024-01-15 1400 - Meeting Name.txt`
+3. **Meeting note**: `~/Vaults/HigherJump/4. Resources/Meeting Notes/2024-01-15 1400 - Meeting Name.md`
 
-The meeting note includes the transcript and is ready for your notes app.
+### File Naming Convention
+
+Files use the format `YYYY-MM-DD HHmm - Title` where:
+- Date/time comes from the **calendar event's start time** (not when recording started)
+- This ensures filenames match links created by morning-plan-processor
+
+The meeting note includes YAML frontmatter for status tracking and the transcript.
 
 ## Whisper Models
 

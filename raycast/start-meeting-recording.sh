@@ -9,4 +9,4 @@
 # @raycast.icon 🎙️
 # @raycast.packageName Meeting Recorder
 
-~/Repos/personal/meeting-recorder/scripts/start-recording.sh
+osascript ~/Repos/personal/meeting-recorder/scripts/quicktime-start-recording.applescript

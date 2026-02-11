@@ -44,17 +44,57 @@ else
     echo "WARNING: Could not detect current audio output device"
 fi
 
-# Get current meeting name from Calendar
-# Uses Google Calendar MCP via a quick lookup, falls back to "Meeting"
-get_meeting_name() {
-    # Try to get meeting name from environment (passed by MeetingBar or caller)
+# Get current meeting info from daily note
+# Returns: MEETING_NAME and EVENT_START_TIME (HHmm format)
+get_meeting_info() {
+    # Try environment override first
     if [ -n "$MEETING_NAME_OVERRIDE" ]; then
-        echo "$MEETING_NAME_OVERRIDE"
+        MEETING_NAME="$MEETING_NAME_OVERRIDE"
+        # If override provided, use current time rounded to nearest 5 min
+        EVENT_START_TIME=$(date "+%H%M")
         return
     fi
 
-    # Default - caller can rename later if needed
-    echo "Meeting"
+    # Look up from daily note (same logic as stop-recording.sh)
+    TODAY_DATE=$(date "+%Y-%m-%d")
+    TODAY_DAY=$(date "+%a")
+    DAILY_NOTE="/Users/will/Vaults/HigherJump/4. Resources/Daily Notes/${TODAY_DATE} ${TODAY_DAY} - Daily.md"
+
+    if [ -f "$DAILY_NOTE" ]; then
+        CURRENT_HOUR=$(date "+%H")
+        CURRENT_MIN=$(date "+%M")
+        CURRENT_MINS=$((10#$CURRENT_HOUR * 60 + 10#$CURRENT_MIN))
+
+        while IFS= read -r line; do
+            # Extract start and end time (HH:MM - HH:MM)
+            if [[ $line =~ ([0-9]{1,2}):([0-9]{2})\ -\ ([0-9]{1,2}):([0-9]{2}) ]]; then
+                START_H="${BASH_REMATCH[1]}"
+                START_M="${BASH_REMATCH[2]}"
+                END_H="${BASH_REMATCH[3]}"
+                END_M="${BASH_REMATCH[4]}"
+
+                START_MINS=$((10#$START_H * 60 + 10#$START_M))
+                END_MINS=$((10#$END_H * 60 + 10#$END_M))
+
+                # Check if current time is within 10 min before start to 15 min after end
+                if [ $CURRENT_MINS -ge $((START_MINS - 10)) ] && [ $CURRENT_MINS -le $((END_MINS + 15)) ]; then
+                    # Extract meeting name from [[...Meeting Notes/...|Display Name]] format
+                    POTENTIAL_NAME=$(echo "$line" | sed -n 's/.*Meeting Notes\/[^|]*|\([^]]*\)].*/\1/p')
+                    if [ -n "$POTENTIAL_NAME" ]; then
+                        MEETING_NAME="$POTENTIAL_NAME"
+                        # Use the event's actual start time (padded to 2 digits)
+                        EVENT_START_TIME=$(printf "%02d%02d" "$START_H" "$START_M")
+                        echo "Found meeting: $MEETING_NAME (starts $EVENT_START_TIME)"
+                        return
+                    fi
+                fi
+            fi
+        done < "$DAILY_NOTE"
+    fi
+
+    # Fallback: generic name with current time
+    MEETING_NAME="Meeting"
+    EVENT_START_TIME=$(date "+%H%M")
 }
 
 # Check if already recording
@@ -64,11 +104,14 @@ if [ -f "$STATE_FILE" ]; then
     exit 1
 fi
 
-# Get meeting name and sanitize for filename
-MEETING_NAME=$(get_meeting_name)
-SAFE_NAME=$(echo "$MEETING_NAME" | tr '/:*?"<>|\\' '-' | tr -s '-')
-TIMESTAMP=$(date "+%Y-%m-%d_%H%M")
-FILENAME="${SAFE_NAME} - ${TIMESTAMP}"
+# Get meeting info from daily note (sets MEETING_NAME and EVENT_START_TIME)
+get_meeting_info
+
+# Sanitize: remove emojis (rough), replace unsafe chars, collapse spaces
+SAFE_NAME=$(echo "$MEETING_NAME" | sed 's/[[:cntrl:]]//g' | tr '/:*?"<>|\\' '-' | tr -s '[:space:]' ' ' | tr -s '-' | sed 's/^[- ]*//;s/[- ]*$//')
+# Standardized format: YYYY-MM-DD HHmm - Title (uses EVENT start time, not current time)
+TODAY_DATE=$(date "+%Y-%m-%d")
+FILENAME="${TODAY_DATE} ${EVENT_START_TIME} - ${SAFE_NAME}"
 AUDIO_FILE="$RECORDINGS_DIR/${FILENAME}.wav"
 
 echo "Starting recording for: $MEETING_NAME"

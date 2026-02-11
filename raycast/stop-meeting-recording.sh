@@ -9,4 +9,4 @@
 # @raycast.icon 🎙️
 # @raycast.packageName Meeting Recorder
 
-~/Repos/personal/meeting-recorder/scripts/stop-recording.sh
+osascript ~/Repos/personal/meeting-recorder/scripts/quicktime-stop-recording.applescript
