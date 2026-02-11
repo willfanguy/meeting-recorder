@@ -23,11 +23,60 @@ DIRNAME=$(dirname "$AUDIO_FILE")
 WAV_FILE="${DIRNAME}/${BASENAME}.wav"
 TRANSCRIPT_FILE="${DIRNAME}/${BASENAME}.txt"
 NOTE_FILE="${MEETING_NOTES_DIR}/${BASENAME}.md"
+METADATA_FILE="${DIRNAME}/${BASENAME}.json"
+
+# Look for matching Zoom team chat
+find_zoom_chat() {
+    local date_part="$1"  # YYYY-MM-DD
+    local time_part="$2"  # HHMM
+    local title="$3"      # Meeting Title
+    local zoom_dir="/Users/will/Documents/Zoom"
+
+    [ ! -d "$zoom_dir" ] && return 1
+
+    # Convert HHMM to HH.MM pattern for Zoom folder matching
+    local hour="${time_part:0:2}"
+    local minute="${time_part:2:2}"
+
+    # Try exact date + HH.MM match first
+    for folder in "$zoom_dir/${date_part} ${hour}.${minute}"*; do
+        if [ -d "$folder" ] && [ -f "$folder/meeting_saved_new_chat.txt" ]; then
+            echo "$folder/meeting_saved_new_chat.txt"
+            return 0
+        fi
+    done
+
+    # Fallback: match date + hour only (handles off-by-a-minute starts)
+    for folder in "$zoom_dir/${date_part} ${hour}."*; do
+        if [ -d "$folder" ] && [ -f "$folder/meeting_saved_new_chat.txt" ]; then
+            echo "$folder/meeting_saved_new_chat.txt"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Read metadata if available (written by MeetingBar via eventStartScript.scpt)
+MEETING_URL=""
+MEETING_SERVICE=""
+ATTENDEE_COUNT=""
+MEETING_LOCATION=""
+MEETING_NOTES_CONTENT=""
+if [ -f "$METADATA_FILE" ]; then
+    echo "Reading MeetingBar metadata from $METADATA_FILE" >> /tmp/meeting-recorder.log
+    MEETING_URL=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('meetingUrl',''))" 2>/dev/null)
+    MEETING_SERVICE=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('meetingService',''))" 2>/dev/null)
+    ATTENDEE_COUNT=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('attendeeCount',0))" 2>/dev/null)
+    MEETING_LOCATION=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('location',''))" 2>/dev/null)
+    MEETING_NOTES_CONTENT=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('meetingNotes',''))" 2>/dev/null)
+fi
 
 # Wait for audio file to be fully written (moov atom can be missing if read too early)
+# Long recordings (60+ min) can produce 200MB+ files that take 2-3 min to export
 wait_for_valid_audio() {
     local file="$1"
-    local max_attempts=10
+    local max_attempts=30
     local attempt=1
 
     while [ $attempt -le $max_attempts ]; do
@@ -36,11 +85,11 @@ wait_for_valid_audio() {
             return 0
         fi
         echo "Waiting for audio file to be ready (attempt $attempt/$max_attempts)..." >> /tmp/meeting-recorder.log
-        sleep 2
+        sleep 3
         attempt=$((attempt + 1))
     done
 
-    echo "Error: Audio file not valid after $max_attempts attempts" >> /tmp/meeting-recorder.log
+    echo "Error: Audio file not valid after $max_attempts attempts (waited $((max_attempts * 3))s)" >> /tmp/meeting-recorder.log
     return 1
 }
 
@@ -87,6 +136,45 @@ TITLE_PART=$(echo "$BASENAME" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4} -
 # Format time as HH:MM
 TIME_FORMATTED="${TIME_PART:0:2}:${TIME_PART:2:2}"
 
+# Look for matching Zoom team chat
+ZOOM_CHAT_CONTENT=""
+ZOOM_CHAT_FILE=$(find_zoom_chat "$DATE_PART" "$TIME_PART" "$TITLE_PART" 2>/dev/null)
+if [ -n "$ZOOM_CHAT_FILE" ] && [ -f "$ZOOM_CHAT_FILE" ]; then
+    echo "Found Zoom chat: $ZOOM_CHAT_FILE" >> /tmp/meeting-recorder.log
+    ZOOM_CHAT_CONTENT=$(cat "$ZOOM_CHAT_FILE")
+fi
+
+# Build optional frontmatter fields
+EXTRA_FRONTMATTER=""
+if [ -n "$MEETING_URL" ]; then
+    EXTRA_FRONTMATTER="${EXTRA_FRONTMATTER}meeting_url: \"$MEETING_URL\"
+"
+fi
+if [ -n "$MEETING_SERVICE" ]; then
+    EXTRA_FRONTMATTER="${EXTRA_FRONTMATTER}meeting_service: \"$MEETING_SERVICE\"
+"
+fi
+if [ -n "$ATTENDEE_COUNT" ] && [ "$ATTENDEE_COUNT" != "0" ]; then
+    EXTRA_FRONTMATTER="${EXTRA_FRONTMATTER}attendee_count: $ATTENDEE_COUNT
+"
+fi
+if [ -n "$MEETING_LOCATION" ]; then
+    EXTRA_FRONTMATTER="${EXTRA_FRONTMATTER}location: \"$MEETING_LOCATION\"
+"
+fi
+
+# Build optional agenda section
+AGENDA_SECTION=""
+if [ -n "$MEETING_NOTES_CONTENT" ]; then
+    AGENDA_SECTION="## Agenda / Notes
+
+$MEETING_NOTES_CONTENT
+
+---
+
+"
+fi
+
 # Create meeting note
 echo "Creating meeting note..." >> /tmp/meeting-recorder.log
 cat > "$NOTE_FILE" << EOF
@@ -97,7 +185,7 @@ time: "$TIME_FORMATTED"
 event_id: "quicktime-$(date +%Y%m%d%H%M%S)"
 status: transcribed
 recording: "$AUDIO_FILE"
-attendees: []
+${EXTRA_FRONTMATTER}attendees: []
 tags:
   - meeting
 ---
@@ -110,10 +198,25 @@ tags:
 
 ---
 
-## Transcript
+${AGENDA_SECTION}## Transcript
 
 $(cat "$TRANSCRIPT_FILE")
 EOF
+
+# Append Zoom team chat if found
+if [ -n "$ZOOM_CHAT_CONTENT" ]; then
+    cat >> "$NOTE_FILE" << 'CHATEOF'
+
+---
+
+## Team Chat (Zoom)
+
+CHATEOF
+    echo "$ZOOM_CHAT_CONTENT" >> "$NOTE_FILE"
+fi
+
+# Clean up metadata file
+rm -f "$METADATA_FILE"
 
 echo "Meeting note created: $NOTE_FILE" >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Transcription complete!" with title "Meeting Recorder"'

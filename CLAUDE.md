@@ -93,6 +93,17 @@ Applied to meeting titles for filenames:
 3. Collapse multiple spaces/dashes
 4. Trim leading/trailing spaces and dashes
 
+## Zoom Team Chat Integration
+
+When Will saves the team chat from a Zoom meeting, it's stored at:
+`~/Documents/Zoom/YYYY-MM-DD HH.MM.SS Meeting Title/meeting_saved_new_chat.txt`
+
+The `transcribe-and-process.sh` script automatically searches this directory for a chat matching the meeting's date and time. If found, it's appended to the meeting note as a `## Team Chat (Zoom)` section.
+
+**Matching logic:** Date + HH.MM from the Zoom folder against our HHMM time format. Falls back to hour-only matching if exact minute doesn't match.
+
+The meeting-intelligence-processor also knows to check for Zoom chat — both in the meeting note (primary) and by searching the Zoom directory directly (fallback for notes not created by the recorder pipeline).
+
 ## Related Components
 
 - **morning-plan-processor** (`~/.claude/agents/morning-plan-processor.md`): Creates daily note with meeting links

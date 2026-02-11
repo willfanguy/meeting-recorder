@@ -31,28 +31,46 @@ on run
         set currentDate to do shell script "date '+%Y-%m-%d'"
         set currentHour to do shell script "date '+%H%M'"
 
-        -- Use recording start time for meeting matching (handles back-to-back meetings)
-        set startHour to currentHour
+        -- Try MeetingBar metadata first (written by eventStartScript.scpt)
+        set meetingName to ""
+        set eventTime to ""
+        set metadataFile to "/tmp/meeting-recorder-metadata.json"
+        set hasMetadata to false
         try
-            set startHour to do shell script "cat /tmp/meeting-recorder-start-time.txt 2>/dev/null | tr -d '\\n'"
-            if startHour is "" then set startHour to currentHour
-        on error
-            set startHour to currentHour
+            set metaCheck to do shell script "[ -f " & quoted form of metadataFile & " ] && echo yes || echo no"
+            if metaCheck is "yes" then
+                set meetingName to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['title'])\""
+                set eventTime to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['startTime'])\""
+                set currentDate to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['startDate'])\""
+                set hasMetadata to true
+                do shell script "echo 'Using MeetingBar metadata: " & meetingName & "' >> /tmp/meeting-recorder.log"
+            end if
+        on error metaErr
+            do shell script "echo 'Metadata read error: " & metaErr & "' >> /tmp/meeting-recorder.log"
         end try
-        -- Clean up state file
-        do shell script "rm -f /tmp/meeting-recorder-start-time.txt"
 
-        -- Try to find meeting name from daily note using start time
-        set meetingResult to my getMeetingForTime(currentDate, startHour)
-        set meetingName to item 1 of meetingResult
-        set eventTime to item 2 of meetingResult
+        -- Fall back to daily note parsing (Raycast-triggered recordings)
+        if meetingName is "" then
+            set startHour to currentHour
+            try
+                set startHour to do shell script "cat /tmp/meeting-recorder-start-time.txt 2>/dev/null | tr -d '\\n'"
+                if startHour is "" then set startHour to currentHour
+            on error
+                set startHour to currentHour
+            end try
+            do shell script "rm -f /tmp/meeting-recorder-start-time.txt"
 
-        -- Generate filename using event time (matches morning-plan links)
+            set meetingResult to my getMeetingForTime(currentDate, startHour)
+            set meetingName to item 1 of meetingResult
+            set eventTime to item 2 of meetingResult
+        end if
+
+        -- Apply defaults
         if meetingName is "" then
             set meetingName to "Meeting"
         end if
         if eventTime is "" then
-            set eventTime to startHour
+            set eventTime to currentHour
         end if
         set fileName to currentDate & " " & eventTime & " - " & my sanitizeFilename(meetingName)
         set tempPath to tempFolder & fileName & ".m4a"
@@ -77,6 +95,14 @@ on run
 
         -- Move to final destination
         do shell script "mv " & quoted form of tempPath & " " & quoted form of finalPath
+
+        -- Move metadata alongside audio for transcribe script
+        if hasMetadata then
+            set metadataFinalPath to recordingsFolder & fileName & ".json"
+            do shell script "mv " & quoted form of metadataFile & " " & quoted form of metadataFinalPath
+        else
+            do shell script "rm -f " & quoted form of metadataFile
+        end if
 
         display notification "Saved: " & fileName with title "Meeting Recorder"
         do shell script "echo 'Recording saved: " & finalPath & "' >> /tmp/meeting-recorder.log"
