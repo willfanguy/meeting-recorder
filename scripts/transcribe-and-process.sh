@@ -276,6 +276,7 @@ time: "$TIME_FORMATTED"
 event_id: "quicktime-$(date +%Y%m%d%H%M%S)"
 status: transcribed
 recording: "$AUDIO_FILE"
+srt: "${DIRNAME}/${BASENAME}.srt"
 ${EXTRA_FRONTMATTER}attendees: []
 tags:
   - meeting
