@@ -14,8 +14,11 @@ fi
 echo "Processing: $AUDIO_FILE" >> /tmp/meeting-recorder.log
 
 # Configuration
-WHISPER_MODEL="$HOME/.local/share/whisper-models/ggml-base.en.bin"
+WHISPER_MODEL_LARGE="$HOME/.local/share/whisper-models/ggml-large-v3-q5_0.bin"
+WHISPER_MODEL_MEDIUM="$HOME/.local/share/whisper-models/ggml-medium-q5_0.bin"
+WHISPER_VAD_MODEL="$HOME/.local/share/whisper-models/ggml-silero-v6.2.0.bin"
 MEETING_NOTES_DIR="$HOME/Vaults/HigherJump/4. Resources/Meeting Notes"
+CONFIG_FILE="$HOME/Repos/personal/productivity/config/config.json"
 
 # Extract filename components
 BASENAME=$(basename "$AUDIO_FILE" .m4a)
@@ -72,6 +75,29 @@ if [ -f "$METADATA_FILE" ]; then
     MEETING_NOTES_CONTENT=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('meetingNotes',''))" 2>/dev/null)
 fi
 
+# Select Whisper model: large for strategic meetings, medium for routine
+# Strategic = high attendee count (10+) or title keywords
+TITLE_LOWER=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
+USE_LARGE=false
+if [ "${ATTENDEE_COUNT:-0}" -ge 10 ] 2>/dev/null; then
+    USE_LARGE=true
+    echo "Model selection: large (attendee count: $ATTENDEE_COUNT)" >> /tmp/meeting-recorder.log
+elif echo "$TITLE_LOWER" | grep -qiE '(kickoff|review|walkthrough|design jam|retro|all hands|town hall|sprint planning|quarterly|offsite|scoping)'; then
+    USE_LARGE=true
+    echo "Model selection: large (title keyword match)" >> /tmp/meeting-recorder.log
+fi
+
+if [ "$USE_LARGE" = true ] && [ -f "$WHISPER_MODEL_LARGE" ]; then
+    WHISPER_MODEL="$WHISPER_MODEL_LARGE"
+    echo "Using large-v3-q5_0 model" >> /tmp/meeting-recorder.log
+elif [ -f "$WHISPER_MODEL_MEDIUM" ]; then
+    WHISPER_MODEL="$WHISPER_MODEL_MEDIUM"
+    echo "Using medium-q5_0 model (default)" >> /tmp/meeting-recorder.log
+else
+    WHISPER_MODEL="$WHISPER_MODEL_LARGE"
+    echo "Using large-v3-q5_0 model (medium not available)" >> /tmp/meeting-recorder.log
+fi
+
 # Wait for audio file to be fully written (moov atom can be missing if read too early)
 # Long recordings (60+ min) can produce 200MB+ files that take 2-3 min to export
 wait_for_valid_audio() {
@@ -104,8 +130,9 @@ echo "Converting to WAV..." >> /tmp/meeting-recorder.log
 ffmpeg -y -i "$AUDIO_FILE" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV_FILE" 2>> /tmp/meeting-recorder.log
 
 # Transcribe with Whisper
-echo "Transcribing with Whisper..." >> /tmp/meeting-recorder.log
-osascript -e 'display notification "Transcribing with Whisper..." with title "Meeting Recorder"'
+MODEL_NAME=$(basename "$WHISPER_MODEL" .bin | sed 's/ggml-//')
+echo "Transcribing with Whisper ($MODEL_NAME)..." >> /tmp/meeting-recorder.log
+osascript -e "display notification \"Transcribing with Whisper ($MODEL_NAME)...\" with title \"Meeting Recorder\""
 
 if [ ! -f "$WHISPER_MODEL" ]; then
     echo "Error: Whisper model not found: $WHISPER_MODEL" >> /tmp/meeting-recorder.log
@@ -113,11 +140,64 @@ if [ ! -f "$WHISPER_MODEL" ]; then
     exit 1
 fi
 
-whisper-cli -m "$WHISPER_MODEL" -otxt -l en -t 4 "$WAV_FILE" 2>> /tmp/meeting-recorder.log
+# Build context prompt from meeting title and known proper nouns
+# This primes Whisper to correctly recognize names and project terms
+TITLE_FOR_PROMPT=$(echo "$BASENAME" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4} - //')
+WHISPER_PROMPT="Meeting: ${TITLE_FOR_PROMPT}. Participants may include: Will Fanguy, Kevin Chen, Aron Delevic, Thomas Murphy, Judith Wilding, Tim Rosenberg, Tony Hawke, Alekhya Guduri. Projects: SuperFit, Project Door, ARC, SIHP, Glassdoor, Indeed, JobsForYou."
 
-# Move transcript to expected location
-if [ -f "${WAV_FILE}.txt" ]; then
-    mv "${WAV_FILE}.txt" "$TRANSCRIPT_FILE"
+# Build whisper command with enhancements
+WHISPER_ARGS=(-m "$WHISPER_MODEL" -otxt -l en -t 8)
+WHISPER_ARGS+=(--prompt "$WHISPER_PROMPT")
+WHISPER_ARGS+=(--suppress-nst)
+# Limit context tokens to prevent hallucination loops (large models can enter
+# self-reinforcing repetition when unlimited context accumulates)
+WHISPER_ARGS+=(--max-context 224)
+
+# Enable VAD if model exists (prevents hallucination on silence)
+if [ -f "$WHISPER_VAD_MODEL" ]; then
+    WHISPER_ARGS+=(--vad -vm "$WHISPER_VAD_MODEL")
+    echo "VAD enabled with Silero model" >> /tmp/meeting-recorder.log
+fi
+
+echo "Whisper args: ${WHISPER_ARGS[*]}" >> /tmp/meeting-recorder.log
+
+# For long recordings (>30 min), split into 15-min chunks to prevent
+# hallucination loops from context accumulation in large models
+DURATION_SECS=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$WAV_FILE" 2>/dev/null | cut -d. -f1)
+CHUNK_THRESHOLD=1800  # 30 minutes
+
+if [ "${DURATION_SECS:-0}" -gt "$CHUNK_THRESHOLD" ]; then
+    echo "Long recording (${DURATION_SECS}s) — using chunked transcription" >> /tmp/meeting-recorder.log
+    CHUNK_DIR=$(mktemp -d /tmp/whisper-chunks-XXXXXX)
+    CHUNK_SIZE=900  # 15 minutes
+    CHUNK_NUM=0
+
+    # Split audio into chunks
+    for ((start=0; start<DURATION_SECS; start+=CHUNK_SIZE)); do
+        CHUNK_NUM=$((CHUNK_NUM + 1))
+        CHUNK_FILE="$CHUNK_DIR/chunk_$(printf '%02d' $CHUNK_NUM).wav"
+        ffmpeg -y -hide_banner -ss "$start" -t "$CHUNK_SIZE" -i "$WAV_FILE" -c:a pcm_s16le "$CHUNK_FILE" 2>/dev/null
+    done
+    echo "Split into $CHUNK_NUM chunks" >> /tmp/meeting-recorder.log
+
+    # Transcribe each chunk independently (fresh context per chunk)
+    > "$TRANSCRIPT_FILE"
+    for CHUNK in "$CHUNK_DIR"/chunk_*.wav; do
+        whisper-cli "${WHISPER_ARGS[@]}" -f "$CHUNK" 2>> /tmp/meeting-recorder.log
+        if [ -f "${CHUNK}.txt" ]; then
+            cat "${CHUNK}.txt" >> "$TRANSCRIPT_FILE"
+            echo "" >> "$TRANSCRIPT_FILE"
+        fi
+    done
+
+    # Clean up chunks
+    rm -rf "$CHUNK_DIR"
+else
+    # Short recording — transcribe directly
+    whisper-cli "${WHISPER_ARGS[@]}" "$WAV_FILE" 2>> /tmp/meeting-recorder.log
+    if [ -f "${WAV_FILE}.txt" ]; then
+        mv "${WAV_FILE}.txt" "$TRANSCRIPT_FILE"
+    fi
 fi
 
 if [ ! -f "$TRANSCRIPT_FILE" ]; then
@@ -138,7 +218,7 @@ TIME_FORMATTED="${TIME_PART:0:2}:${TIME_PART:2:2}"
 
 # Look for matching Zoom team chat
 ZOOM_CHAT_CONTENT=""
-ZOOM_CHAT_FILE=$(find_zoom_chat "$DATE_PART" "$TIME_PART" "$TITLE_PART" 2>/dev/null)
+ZOOM_CHAT_FILE=$(find_zoom_chat "$DATE_PART" "$TIME_PART" "$TITLE_PART" 2>/dev/null || true)
 if [ -n "$ZOOM_CHAT_FILE" ] && [ -f "$ZOOM_CHAT_FILE" ]; then
     echo "Found Zoom chat: $ZOOM_CHAT_FILE" >> /tmp/meeting-recorder.log
     ZOOM_CHAT_CONTENT=$(cat "$ZOOM_CHAT_FILE")
@@ -226,13 +306,13 @@ echo "Running meeting intelligence..." >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Running AI analysis..." with title "Meeting Recorder"'
 
 (
-    /Users/will/.local/bin/claude -p "Process this meeting transcript and add an intelligence summary to the end of the file. The file is at: $NOTE_FILE" \
+    /Users/will/.local/bin/claude -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
         --agent meeting-intelligence-processor \
         --dangerously-skip-permissions \
         >> /tmp/meeting-intelligence.log 2>&1
 
     if [ $? -eq 0 ]; then
-        osascript -e 'display notification "AI analysis complete!" with title "Meeting Recorder" sound name "Glass"'
+        osascript -e 'display notification "AI analysis complete — run meeting-tasks-extractor to review tasks" with title "Meeting Recorder" sound name "Glass"'
         echo "Meeting intelligence completed successfully" >> /tmp/meeting-recorder.log
     else
         osascript -e 'display notification "AI analysis failed - check logs" with title "Meeting Recorder"'

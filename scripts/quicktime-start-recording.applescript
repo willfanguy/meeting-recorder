@@ -58,6 +58,27 @@ on run
         set startTime to do shell script "date '+%Y-%m-%d %H:%M:%S'"
         set startHHMM to do shell script "date '+%H%M'"
         do shell script "echo 'Recording started: " & startTime & "' >> /tmp/meeting-recorder.log"
+
+        -- Snapshot MeetingBar metadata for this recording session
+        -- The live metadata file gets overwritten when the next meeting starts,
+        -- so we freeze it here to preserve the identity of the meeting we're recording
+        set metadataFile to "/tmp/meeting-recorder-metadata.json"
+        set activeSession to "/tmp/meeting-recorder-active-session.json"
+        try
+            set metaExists to do shell script "[ -f " & quoted form of metadataFile & " ] && echo yes || echo no"
+            if metaExists is "yes" then
+                do shell script "cp " & quoted form of metadataFile & " " & quoted form of activeSession
+                -- Use event start time (not system clock) so filename matches daily note links
+                set eventHHMM to do shell script "python3 -c \"import json; print(json.load(open('" & activeSession & "'))['startTime'])\" 2>/dev/null || echo ''"
+                if eventHHMM is not "" then
+                    set startHHMM to eventHHMM
+                    do shell script "echo 'Using event time " & eventHHMM & " (not system clock) for start time' >> /tmp/meeting-recorder.log"
+                end if
+            end if
+        on error snapErr
+            do shell script "echo 'Metadata snapshot error (non-fatal): " & snapErr & "' >> /tmp/meeting-recorder.log"
+        end try
+
         do shell script "echo " & startHHMM & " > /tmp/meeting-recorder-start-time.txt"
 
         display notification "Recording started" with title "Meeting Recorder" sound name "Ping"

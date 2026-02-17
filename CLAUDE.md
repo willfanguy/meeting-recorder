@@ -38,7 +38,7 @@ Examples:
 
 4. **Post-processing:** `transcribe-and-process.sh`:
    - Converts m4a to wav
-   - Transcribes with Whisper
+   - Transcribes with Whisper (large-v3-q5_0, with VAD and context prompt)
    - Creates meeting note with frontmatter
    - Runs `meeting-intelligence-processor` for AI summary
 

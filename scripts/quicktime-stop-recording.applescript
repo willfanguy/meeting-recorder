@@ -31,36 +31,71 @@ on run
         set currentDate to do shell script "date '+%Y-%m-%d'"
         set currentHour to do shell script "date '+%H%M'"
 
-        -- Try MeetingBar metadata first (written by eventStartScript.scpt)
+        -- Get the actual recording start time (saved when recording began)
+        set recordingStartHour to currentHour
+        try
+            set recordingStartHour to do shell script "cat /tmp/meeting-recorder-start-time.txt 2>/dev/null | tr -d '\\n'"
+            if recordingStartHour is "" then set recordingStartHour to currentHour
+        on error
+            set recordingStartHour to currentHour
+        end try
+        do shell script "rm -f /tmp/meeting-recorder-start-time.txt"
+
+        -- Try active session snapshot first (frozen at recording start)
+        -- This is immune to the live metadata being overwritten by a later meeting
         set meetingName to ""
         set eventTime to ""
+        set activeSession to "/tmp/meeting-recorder-active-session.json"
         set metadataFile to "/tmp/meeting-recorder-metadata.json"
         set hasMetadata to false
+        set metadataSource to ""
         try
-            set metaCheck to do shell script "[ -f " & quoted form of metadataFile & " ] && echo yes || echo no"
-            if metaCheck is "yes" then
-                set meetingName to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['title'])\""
-                set eventTime to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['startTime'])\""
-                set currentDate to do shell script "python3 -c \"import json; print(json.load(open('" & metadataFile & "'))['startDate'])\""
+            -- Prefer the snapshot (frozen when recording started — trustworthy)
+            set snapshotCheck to do shell script "[ -f " & quoted form of activeSession & " ] && echo yes || echo no"
+            if snapshotCheck is "yes" then
+                set sessionFile to activeSession
+                set metaTitle to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['title'])\""
+                set metaTime to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['startTime'])\""
+                set metaDate to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['startDate'])\""
+
+                set meetingName to metaTitle
+                set eventTime to metaTime
+                set currentDate to metaDate
                 set hasMetadata to true
-                do shell script "echo 'Using MeetingBar metadata: " & meetingName & "' >> /tmp/meeting-recorder.log"
+                set metadataSource to sessionFile
+                do shell script "echo 'Using snapshot metadata: " & meetingName & " at " & metaTime & "' >> /tmp/meeting-recorder.log"
+            else
+                -- No snapshot — fall back to live metadata with hour validation
+                -- (live file may have been overwritten by a later meeting)
+                set liveCheck to do shell script "[ -f " & quoted form of metadataFile & " ] && echo yes || echo no"
+                if liveCheck is "yes" then
+                    set sessionFile to metadataFile
+                    set metaTitle to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['title'])\""
+                    set metaTime to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['startTime'])\""
+                    set metaDate to do shell script "python3 -c \"import json; print(json.load(open('" & sessionFile & "'))['startDate'])\""
+
+                    -- Validate: metadata hour must match recording start hour
+                    set metaStartHour to text 1 thru 2 of metaTime
+                    set recordingStartHourPrefix to text 1 thru 2 of recordingStartHour
+                    if metaStartHour is recordingStartHourPrefix then
+                        set meetingName to metaTitle
+                        set eventTime to metaTime
+                        set currentDate to metaDate
+                        set hasMetadata to true
+                        set metadataSource to sessionFile
+                        do shell script "echo 'Using live metadata (hour validated): " & meetingName & " at " & metaTime & "' >> /tmp/meeting-recorder.log"
+                    else
+                        do shell script "echo 'Live metadata stale: metadata says " & metaTime & " but recording started at " & recordingStartHour & ", falling back to daily note' >> /tmp/meeting-recorder.log"
+                    end if
+                end if
             end if
         on error metaErr
             do shell script "echo 'Metadata read error: " & metaErr & "' >> /tmp/meeting-recorder.log"
         end try
 
-        -- Fall back to daily note parsing (Raycast-triggered recordings)
+        -- Fall back to daily note parsing (stale metadata or Raycast-triggered recordings)
         if meetingName is "" then
-            set startHour to currentHour
-            try
-                set startHour to do shell script "cat /tmp/meeting-recorder-start-time.txt 2>/dev/null | tr -d '\\n'"
-                if startHour is "" then set startHour to currentHour
-            on error
-                set startHour to currentHour
-            end try
-            do shell script "rm -f /tmp/meeting-recorder-start-time.txt"
-
-            set meetingResult to my getMeetingForTime(currentDate, startHour)
+            set meetingResult to my getMeetingForTime(currentDate, recordingStartHour)
             set meetingName to item 1 of meetingResult
             set eventTime to item 2 of meetingResult
         end if
@@ -99,10 +134,11 @@ on run
         -- Move metadata alongside audio for transcribe script
         if hasMetadata then
             set metadataFinalPath to recordingsFolder & fileName & ".json"
-            do shell script "mv " & quoted form of metadataFile & " " & quoted form of metadataFinalPath
-        else
-            do shell script "rm -f " & quoted form of metadataFile
+            do shell script "cp " & quoted form of metadataSource & " " & quoted form of metadataFinalPath
         end if
+        -- Clean up session snapshot and live metadata
+        do shell script "rm -f " & quoted form of activeSession
+        do shell script "rm -f " & quoted form of metadataFile
 
         display notification "Saved: " & fileName with title "Meeting Recorder"
         do shell script "echo 'Recording saved: " & finalPath & "' >> /tmp/meeting-recorder.log"
