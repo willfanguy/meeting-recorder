@@ -146,8 +146,11 @@ TITLE_FOR_PROMPT=$(echo "$BASENAME" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9
 WHISPER_PROMPT="Meeting: ${TITLE_FOR_PROMPT}. Participants may include: Will Fanguy, Kevin Chen, Aron Delevic, Thomas Murphy, Judith Wilding, Tim Rosenberg, Tony Hawke, Alekhya Guduri. Projects: SuperFit, Project Door, ARC, SIHP, Glassdoor, Indeed, JobsForYou."
 
 # Build whisper command with enhancements
-WHISPER_ARGS=(-m "$WHISPER_MODEL" -otxt -l en -t 8)
+# -t 4: use 4 threads (background task — leave cores free for foreground work)
+# -osrt: also output SRT with timestamps for AI summary to reference
+WHISPER_ARGS=(-m "$WHISPER_MODEL" -otxt -osrt -l en -t 4)
 WHISPER_ARGS+=(--prompt "$WHISPER_PROMPT")
+WHISPER_ARGS+=(--carry-initial-prompt)
 WHISPER_ARGS+=(--suppress-nst)
 # Limit context tokens to prevent hallucination loops (large models can enter
 # self-reinforcing repetition when unlimited context accumulates)
@@ -182,11 +185,16 @@ if [ "${DURATION_SECS:-0}" -gt "$CHUNK_THRESHOLD" ]; then
 
     # Transcribe each chunk independently (fresh context per chunk)
     > "$TRANSCRIPT_FILE"
+    SRT_FILE="${DIRNAME}/${BASENAME}.srt"
+    > "$SRT_FILE"
     for CHUNK in "$CHUNK_DIR"/chunk_*.wav; do
         whisper-cli "${WHISPER_ARGS[@]}" -f "$CHUNK" 2>> /tmp/meeting-recorder.log
         if [ -f "${CHUNK}.txt" ]; then
             cat "${CHUNK}.txt" >> "$TRANSCRIPT_FILE"
             echo "" >> "$TRANSCRIPT_FILE"
+        fi
+        if [ -f "${CHUNK}.srt" ]; then
+            cat "${CHUNK}.srt" >> "$SRT_FILE"
         fi
     done
 
@@ -197,6 +205,9 @@ else
     whisper-cli "${WHISPER_ARGS[@]}" "$WAV_FILE" 2>> /tmp/meeting-recorder.log
     if [ -f "${WAV_FILE}.txt" ]; then
         mv "${WAV_FILE}.txt" "$TRANSCRIPT_FILE"
+    fi
+    if [ -f "${WAV_FILE}.srt" ]; then
+        mv "${WAV_FILE}.srt" "${DIRNAME}/${BASENAME}.srt"
     fi
 fi
 
