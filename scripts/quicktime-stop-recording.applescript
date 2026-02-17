@@ -215,6 +215,10 @@ on sanitizeFilename(inputName)
         set cleanName to textItems as text
     end repeat
     set AppleScript's text item delimiters to ""
+    -- Strip trailing hyphens and spaces (e.g. "prompts?" -> "prompts-" -> "prompts")
+    repeat while cleanName ends with "-" or cleanName ends with " "
+        set cleanName to text 1 thru -2 of cleanName
+    end repeat
     return cleanName
 end sanitizeFilename
 

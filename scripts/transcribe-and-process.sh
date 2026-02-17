@@ -222,7 +222,7 @@ echo "Transcription complete: $TRANSCRIPT_FILE" >> /tmp/meeting-recorder.log
 # Extract date and time from filename (format: YYYY-MM-DD HHMM - Title)
 DATE_PART=$(echo "$BASENAME" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
 TIME_PART=$(echo "$BASENAME" | grep -oE ' [0-9]{4} ' | tr -d ' ')
-TITLE_PART=$(echo "$BASENAME" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4} - //')
+TITLE_PART=$(echo "$BASENAME" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4} - //' | sed -E 's/[-[:space:]]+$//')
 
 # Format time as HH:MM
 TIME_FORMATTED="${TIME_PART:0:2}:${TIME_PART:2:2}"
