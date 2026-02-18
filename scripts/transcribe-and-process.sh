@@ -76,15 +76,24 @@ if [ -f "$METADATA_FILE" ]; then
 fi
 
 # Select Whisper model: large for strategic meetings, medium for routine
-# Strategic = high attendee count (10+) or title keywords
+# Routine meetings use medium regardless of attendee count
+# Strategic = high attendee count (10+) or title keywords, BUT NOT routine syncs
 TITLE_LOWER=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
 USE_LARGE=false
-if [ "${ATTENDEE_COUNT:-0}" -ge 10 ] 2>/dev/null; then
-    USE_LARGE=true
-    echo "Model selection: large (attendee count: $ATTENDEE_COUNT)" >> /tmp/meeting-recorder.log
-elif echo "$TITLE_LOWER" | grep -qiE '(kickoff|review|walkthrough|design jam|retro|all hands|town hall|sprint planning|quarterly|offsite|scoping)'; then
-    USE_LARGE=true
-    echo "Model selection: large (title keyword match)" >> /tmp/meeting-recorder.log
+IS_ROUTINE=false
+if echo "$TITLE_LOWER" | grep -qiE '(stand.?up|standup|daily|sync|check.?in|check in|1:1|1-1|weekly sync)'; then
+    IS_ROUTINE=true
+    echo "Model selection: medium (routine meeting keyword match)" >> /tmp/meeting-recorder.log
+fi
+
+if [ "$IS_ROUTINE" = false ]; then
+    if [ "${ATTENDEE_COUNT:-0}" -ge 10 ] 2>/dev/null; then
+        USE_LARGE=true
+        echo "Model selection: large (attendee count: $ATTENDEE_COUNT)" >> /tmp/meeting-recorder.log
+    elif echo "$TITLE_LOWER" | grep -qiE '(kickoff|review|walkthrough|design jam|retro|all hands|town hall|sprint planning|quarterly|offsite|scoping)'; then
+        USE_LARGE=true
+        echo "Model selection: large (title keyword match)" >> /tmp/meeting-recorder.log
+    fi
 fi
 
 if [ "$USE_LARGE" = true ] && [ -f "$WHISPER_MODEL_LARGE" ]; then
