@@ -75,36 +75,23 @@ if [ -f "$METADATA_FILE" ]; then
     MEETING_NOTES_CONTENT=$(python3 -c "import json; print(json.load(open('$METADATA_FILE')).get('meetingNotes',''))" 2>/dev/null)
 fi
 
-# Select Whisper model: large for strategic meetings, medium for routine
-# Routine meetings use medium regardless of attendee count
-# Strategic = high attendee count (10+) or title keywords, BUT NOT routine syncs
+# Select Whisper model: large by default, medium only for routine meetings (speed)
 TITLE_LOWER=$(echo "$BASENAME" | tr '[:upper:]' '[:lower:]')
-USE_LARGE=false
-IS_ROUTINE=false
+USE_MEDIUM=false
 if echo "$TITLE_LOWER" | grep -qiE '(stand.?up|standup|daily|sync|check.?in|check in|1:1|1-1|weekly sync)'; then
-    IS_ROUTINE=true
+    USE_MEDIUM=true
     echo "Model selection: medium (routine meeting keyword match)" >> /tmp/meeting-recorder.log
 fi
 
-if [ "$IS_ROUTINE" = false ]; then
-    if [ "${ATTENDEE_COUNT:-0}" -ge 10 ] 2>/dev/null; then
-        USE_LARGE=true
-        echo "Model selection: large (attendee count: $ATTENDEE_COUNT)" >> /tmp/meeting-recorder.log
-    elif echo "$TITLE_LOWER" | grep -qiE '(kickoff|review|walkthrough|design jam|retro|all hands|town hall|sprint planning|quarterly|offsite|scoping)'; then
-        USE_LARGE=true
-        echo "Model selection: large (title keyword match)" >> /tmp/meeting-recorder.log
-    fi
-fi
-
-if [ "$USE_LARGE" = true ] && [ -f "$WHISPER_MODEL_LARGE" ]; then
-    WHISPER_MODEL="$WHISPER_MODEL_LARGE"
-    echo "Using large-v3-q5_0 model" >> /tmp/meeting-recorder.log
-elif [ -f "$WHISPER_MODEL_MEDIUM" ]; then
+if [ "$USE_MEDIUM" = true ] && [ -f "$WHISPER_MODEL_MEDIUM" ]; then
     WHISPER_MODEL="$WHISPER_MODEL_MEDIUM"
-    echo "Using medium-q5_0 model (default)" >> /tmp/meeting-recorder.log
-else
+    echo "Using medium-q5_0 model (routine meeting)" >> /tmp/meeting-recorder.log
+elif [ -f "$WHISPER_MODEL_LARGE" ]; then
     WHISPER_MODEL="$WHISPER_MODEL_LARGE"
-    echo "Using large-v3-q5_0 model (medium not available)" >> /tmp/meeting-recorder.log
+    echo "Using large-v3-q5_0 model (default)" >> /tmp/meeting-recorder.log
+else
+    WHISPER_MODEL="$WHISPER_MODEL_MEDIUM"
+    echo "Using medium-q5_0 model (large not available)" >> /tmp/meeting-recorder.log
 fi
 
 # Wait for audio file to be fully written (moov atom can be missing if read too early)
@@ -327,6 +314,7 @@ echo "Running meeting intelligence..." >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Running AI analysis..." with title "Meeting Recorder"'
 
 (
+    unset CLAUDECODE
     /Users/will/.local/bin/claude -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
         --agent meeting-intelligence-processor \
         --dangerously-skip-permissions \
