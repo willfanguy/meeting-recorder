@@ -98,6 +98,9 @@ on run
             set meetingResult to my getMeetingForTime(currentDate, recordingStartHour)
             set meetingName to item 1 of meetingResult
             set eventTime to item 2 of meetingResult
+            if meetingName is not "" then
+                do shell script "echo 'Using daily note fallback: " & meetingName & " at " & eventTime & " (recording started at " & recordingStartHour & ")' >> /tmp/meeting-recorder.log"
+            end if
         end if
 
         -- Apply defaults
@@ -128,7 +131,25 @@ on run
             close theDoc saving no
         end tell
 
-        -- Move to final destination
+        -- Move to final destination (with overwrite protection)
+        set existingCheck to do shell script "[ -f " & quoted form of finalPath & " ] && echo yes || echo no"
+        if existingCheck is "yes" then
+            -- Append a numeric suffix to avoid overwriting
+            set suffixNum to 2
+            repeat
+                set suffixedName to fileName & " (" & suffixNum & ")"
+                set candidatePath to recordingsFolder & suffixedName & ".m4a"
+                set candidateCheck to do shell script "[ -f " & quoted form of candidatePath & " ] && echo yes || echo no"
+                if candidateCheck is "no" then
+                    set finalPath to candidatePath
+                    set fileName to suffixedName
+                    exit repeat
+                end if
+                set suffixNum to suffixNum + 1
+            end repeat
+            do shell script "echo 'WARNING: file already existed, saved as " & fileName & "' >> /tmp/meeting-recorder.log"
+            display notification "⚠️ Name conflict — saved as " & fileName with title "Meeting Recorder"
+        end if
         do shell script "mv " & quoted form of tempPath & " " & quoted form of finalPath
 
         -- Move metadata alongside audio for transcribe script
@@ -170,11 +191,27 @@ on getMeetingForTime(dateStr, timeStr)
         set exactPattern to "Meeting Notes/" & dateStr & " " & timeStr
         set matchLine to do shell script "grep -o '\\[\\[.*" & exactPattern & ".*|[^]]*\\]\\]' " & quoted form of dailyNote & " 2>/dev/null | head -1"
 
-        -- Fall back to hour-only match (e.g., "10" matches "2026-02-06 10xx")
+        -- Fall back to best-fit match within the hour
+        -- Find the latest meeting that starts at or before recording time
+        -- (prevents picking an earlier meeting when a later one is the correct match)
         if matchLine is "" then
             set targetHour to text 1 thru 2 of timeStr
             set hourPattern to "Meeting Notes/" & dateStr & " " & targetHour
-            set matchLine to do shell script "grep -o '\\[\\[.*" & hourPattern & ".*|[^]]*\\]\\]' " & quoted form of dailyNote & " 2>/dev/null | head -1"
+            set matchLine to do shell script "grep -o '\\[\\[.*" & hourPattern & ".*|[^]]*\\]\\]' " & quoted form of dailyNote & " 2>/dev/null | while IFS= read -r line; do t=$(echo \"$line\" | grep -o '" & dateStr & " [0-9]\\{4\\}' | awk '{print $2}'); if [ \"$t\" -le \"" & timeStr & "\" ]; then echo \"$line\"; fi; done | tail -1"
+        end if
+
+        -- Hour boundary fix: if recording started at XX:55+ and no match yet,
+        -- check the next hour's :00 meeting (handles joining a minute early)
+        if matchLine is "" then
+            set targetMinute to text 3 thru 4 of timeStr
+            if targetMinute ≥ "55" then
+                set nextHour to do shell script "printf '%02d' $(( " & targetHour & " + 1 ))"
+                set nextHourPattern to "Meeting Notes/" & dateStr & " " & nextHour & "00"
+                set matchLine to do shell script "grep -o '\\[\\[.*" & nextHourPattern & ".*|[^]]*\\]\\]' " & quoted form of dailyNote & " 2>/dev/null | head -1"
+                if matchLine is not "" then
+                    do shell script "echo 'Hour boundary match: recording at " & timeStr & " matched next-hour meeting at " & nextHour & "00' >> /tmp/meeting-recorder.log"
+                end if
+            end if
         end if
 
         if matchLine is "" then

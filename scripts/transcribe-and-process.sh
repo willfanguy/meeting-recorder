@@ -28,6 +28,393 @@ TRANSCRIPT_FILE="${DIRNAME}/${BASENAME}.txt"
 NOTE_FILE="${MEETING_NOTES_DIR}/${BASENAME}.md"
 METADATA_FILE="${DIRNAME}/${BASENAME}.json"
 
+# --- Hallucination detection and retranscription ---
+# Post-transcription defense: detects Whisper context-loop hallucinations
+# (a line repeated >20 times) and retranscribes the affected segment.
+HALLUCINATION_THRESHOLD=20
+
+# detect_hallucination SRT_FILE
+# Prints START_SEC,END_SEC pairs (one per line) for hallucinated ranges, or nothing if clean.
+detect_hallucination() {
+    local srt_file="$1"
+    [ ! -f "$srt_file" ] && return 0
+
+    # Find lines repeated more than threshold times
+    local hallucinated_lines
+    hallucinated_lines=$(grep -v '^[0-9]*$' "$srt_file" | grep -v '^$' | grep -v '\-\->' \
+        | sort | uniq -c | sort -rn \
+        | awk -v thresh="$HALLUCINATION_THRESHOLD" '$1 > thresh { $1=""; print substr($0,2) }')
+
+    [ -z "$hallucinated_lines" ] && return 0
+
+    echo "Hallucination detected! Repeated lines:" >> /tmp/meeting-recorder.log
+    echo "$hallucinated_lines" >> /tmp/meeting-recorder.log
+
+    # Get total duration from last SRT timestamp for clamping
+    local total_secs
+    total_secs=$(grep '\-\->' "$srt_file" | tail -1 | sed 's/.*--> //' | awk -F'[,:]' '{print $1*3600 + $2*60 + $3}')
+
+    # Write hallucinated lines to temp file (BSD awk can't handle newlines in -v)
+    local hall_tmp
+    hall_tmp=$(mktemp /tmp/hall-lines-XXXXXX)
+    echo "$hallucinated_lines" > "$hall_tmp"
+
+    # Find timestamp ranges of hallucinated segments
+    # Parse SRT: for each subtitle block, check if its text matches a hallucinated line
+    awk -v total="$total_secs" '
+    BEGIN { range_start = -1; range_end = -1 }
+    NR == FNR {
+        # First file: build lookup of hallucinated lines
+        line = $0
+        gsub(/^[ \t]+|[ \t]+$/, "", line)
+        if (line != "") hall[line] = 1
+        next
+    }
+    /^[0-9]+$/ { next }
+    /-->/ {
+        # Parse start and end timestamps
+        split($0, ts, " --> ")
+        split(ts[1], s, /[,:]/)
+        split(ts[2], e, /[,:]/)
+        cur_start = s[1]*3600 + s[2]*60 + s[3]
+        cur_end = e[1]*3600 + e[2]*60 + e[3]
+        next
+    }
+    /^$/ { next }
+    {
+        # Text line — check if hallucinated
+        line = $0
+        gsub(/^[ \t]+|[ \t]+$/, "", line)
+        if (line in hall) {
+            if (range_start < 0) {
+                range_start = cur_start
+            }
+            range_end = cur_end
+        } else {
+            if (range_start >= 0) {
+                # Emit range with 30s padding, clamped
+                rs = range_start - 30; if (rs < 0) rs = 0
+                re = range_end + 30; if (re > total) re = total
+                print int(rs) "," int(re)
+                range_start = -1
+                range_end = -1
+            }
+        }
+    }
+    END {
+        if (range_start >= 0) {
+            rs = range_start - 30; if (rs < 0) rs = 0
+            re = range_end + 30; if (re > total) re = total
+            print int(rs) "," int(re)
+        }
+    }
+    ' "$hall_tmp" "$srt_file"
+
+    rm -f "$hall_tmp"
+}
+
+# retranscribe_and_splice WAV_FILE SRT_FILE
+# Detects hallucination, retranscribes affected segments, splices result back.
+retranscribe_and_splice() {
+    local wav_file="$1"
+    local srt_file="$2"
+    local ranges
+    ranges=$(detect_hallucination "$srt_file")
+
+    [ -z "$ranges" ] && return 0
+
+    echo "Hallucination ranges to retranscribe: $ranges" >> /tmp/meeting-recorder.log
+    osascript -e 'display notification "Hallucination detected — retranscribing affected segment..." with title "Meeting Recorder"'
+
+    # Extract the repeating pattern for --suppress-regex
+    # Get the most-repeated line, strip the count prefix, then regex-escape it
+    local suppress_pattern
+    suppress_pattern=$(grep -v '^[0-9]*$' "$srt_file" | grep -v '^$' | grep -v '\-\->' \
+        | sort | uniq -c | sort -rn | head -1 \
+        | sed 's/^[[:space:]]*[0-9]*//' | sed 's/^[[:space:]]*//' \
+        | sed 's/[.?*+^$()|[\\]/\\&/g')
+
+    echo "$ranges" | while IFS=',' read -r range_start range_end; do
+        [ -z "$range_start" ] && continue
+        local duration=$((range_end - range_start))
+        echo "Retranscribing range: ${range_start}s - ${range_end}s (${duration}s)" >> /tmp/meeting-recorder.log
+
+        local chunk_dir
+        chunk_dir=$(mktemp -d /tmp/whisper-retranscribe-XXXXXX)
+
+        # Split into 2-minute sub-chunks for fresh context
+        local sub_chunk_size=120
+        local sub_num=0
+        local sub_srt="$chunk_dir/combined.srt"
+        > "$sub_srt"
+
+        for ((offset=0; offset<duration; offset+=sub_chunk_size)); do
+            sub_num=$((sub_num + 1))
+            local abs_start=$((range_start + offset))
+            local remaining=$((duration - offset))
+            local this_chunk_dur=$sub_chunk_size
+            [ "$remaining" -lt "$this_chunk_dur" ] && this_chunk_dur=$remaining
+            [ "$this_chunk_dur" -le 0 ] && break
+
+            local sub_file="$chunk_dir/sub_$(printf '%02d' $sub_num).wav"
+            ffmpeg -y -hide_banner -ss "$abs_start" -t "$this_chunk_dur" -i "$wav_file" -c:a pcm_s16le "$sub_file" 2>/dev/null
+
+            # Build retranscription args: max-context 0 is the key fix
+            local retry_args=("${WHISPER_ARGS[@]}")
+            # Remove existing -otxt flag (we only want SRT for splicing)
+            local clean_args=()
+            for arg in "${retry_args[@]}"; do
+                [ "$arg" = "-otxt" ] && continue
+                clean_args+=("$arg")
+            done
+            # Override max-context to 0 (no context carryover)
+            local final_args=()
+            local skip_next=false
+            for arg in "${clean_args[@]}"; do
+                if [ "$skip_next" = true ]; then
+                    skip_next=false
+                    continue
+                fi
+                if [ "$arg" = "--max-context" ]; then
+                    skip_next=true
+                    continue
+                fi
+                final_args+=("$arg")
+            done
+            final_args+=(--max-context 0)
+            final_args+=(-osrt)
+
+            # Add suppress-regex if we have a pattern
+            if [ -n "$suppress_pattern" ]; then
+                final_args+=(--suppress-regex "$suppress_pattern")
+            fi
+
+            echo "  Sub-chunk $sub_num: offset=${offset}s, duration=${this_chunk_dur}s" >> /tmp/meeting-recorder.log
+            whisper-cli "${final_args[@]}" -f "$sub_file" 2>> /tmp/meeting-recorder.log
+
+            if [ -f "${sub_file}.srt" ]; then
+                # Offset sub-chunk timestamps by their position within the range
+                offset_srt_timestamps "${sub_file}.srt" "$offset" >> "$sub_srt"
+            fi
+        done
+
+        # Check if retranscription still has hallucination
+        local retry_count=0
+        local max_retries=2
+
+        while [ $retry_count -lt $max_retries ]; do
+            local recheck
+            recheck=$(detect_hallucination "$sub_srt")
+            if [ -z "$recheck" ]; then
+                echo "  Retranscription clean on pass $((retry_count + 1))" >> /tmp/meeting-recorder.log
+                break
+            fi
+
+            retry_count=$((retry_count + 1))
+            echo "  Retranscription still hallucinated, pass $((retry_count + 1))..." >> /tmp/meeting-recorder.log
+
+            if [ $retry_count -eq 1 ]; then
+                # Pass 2: medium model + lower entropy threshold
+                > "$sub_srt"
+                sub_num=0
+                for ((offset=0; offset<duration; offset+=sub_chunk_size)); do
+                    sub_num=$((sub_num + 1))
+                    local abs_start=$((range_start + offset))
+                    local remaining=$((duration - offset))
+                    local this_chunk_dur=$sub_chunk_size
+                    [ "$remaining" -lt "$this_chunk_dur" ] && this_chunk_dur=$remaining
+                    [ "$this_chunk_dur" -le 0 ] && break
+
+                    local sub_file="$chunk_dir/sub_$(printf '%02d' $sub_num).wav"
+                    ffmpeg -y -hide_banner -ss "$abs_start" -t "$this_chunk_dur" -i "$wav_file" -c:a pcm_s16le "$sub_file" 2>/dev/null
+
+                    # Use medium model with aggressive entropy threshold
+                    local pass2_args=(-m "$WHISPER_MODEL_MEDIUM" -osrt -l en -t 4)
+                    pass2_args+=(--prompt "$WHISPER_PROMPT")
+                    pass2_args+=(--suppress-nst)
+                    pass2_args+=(--max-context 0)
+                    pass2_args+=(-et 2.0)
+                    if [ -f "$WHISPER_VAD_MODEL" ]; then
+                        pass2_args+=(--vad -vm "$WHISPER_VAD_MODEL")
+                    fi
+                    if [ -n "$suppress_pattern" ]; then
+                        pass2_args+=(--suppress-regex "$suppress_pattern")
+                    fi
+
+                    whisper-cli "${pass2_args[@]}" -f "$sub_file" 2>> /tmp/meeting-recorder.log
+                    if [ -f "${sub_file}.srt" ]; then
+                        offset_srt_timestamps "${sub_file}.srt" "$offset" >> "$sub_srt"
+                    fi
+                done
+            else
+                # Pass 3: give up, insert gap marker
+                echo "  All retranscription passes failed — inserting gap marker" >> /tmp/meeting-recorder.log
+                cat > "$sub_srt" << GAPSRT
+1
+00:00:00,000 --> 00:00:01,000
+[transcription gap — audio could not be reliably transcribed]
+
+GAPSRT
+                break
+            fi
+        done
+
+        # Splice the retranscribed SRT back into the original
+        splice_srt "$srt_file" "$sub_srt" "$range_start" "$range_end"
+
+        rm -rf "$chunk_dir"
+    done
+
+    # Rebuild .txt from the spliced SRT
+    local txt_file="${srt_file%.srt}.txt"
+    rebuild_txt "$srt_file" "$txt_file"
+
+    echo "Hallucination remediation complete" >> /tmp/meeting-recorder.log
+    osascript -e 'display notification "Retranscription complete" with title "Meeting Recorder"'
+}
+
+# offset_srt_timestamps SRT_FILE OFFSET_SECS
+# Reads an SRT file and adds OFFSET_SECS to all timestamps, writing to stdout.
+offset_srt_timestamps() {
+    local srt_file="$1"
+    local offset="$2"
+
+    awk -v offset="$offset" '
+    function fmt(total_s) {
+        hh = int(total_s / 3600)
+        mm = int((total_s % 3600) / 60)
+        ss_val = int(total_s % 60)
+        ms_val = int((total_s - int(total_s)) * 1000)
+        return sprintf("%02d:%02d:%02d,%03d", hh, mm, ss_val, ms_val)
+    }
+    /-->/ {
+        split($0, parts, " --> ")
+        split(parts[1], sa, /[,:]/)
+        split(parts[2], ea, /[,:]/)
+        ss = sa[1]*3600 + sa[2]*60 + sa[3] + sa[4]/1000 + offset
+        es = ea[1]*3600 + ea[2]*60 + ea[3] + ea[4]/1000 + offset
+        print fmt(ss) " --> " fmt(es)
+        next
+    }
+    { print }
+    ' "$srt_file"
+}
+
+# splice_srt ORIGINAL_SRT REPLACEMENT_SRT RANGE_START_SEC RANGE_END_SEC
+# Replaces entries in ORIGINAL_SRT that fall within the hallucinated range
+# with entries from REPLACEMENT_SRT (offset to absolute time), renumbers sequentially.
+splice_srt() {
+    local original="$1"
+    local replacement="$2"
+    local range_start="$3"
+    local range_end="$4"
+
+    local tmp_out
+    tmp_out=$(mktemp /tmp/spliced-srt-XXXXXX.srt)
+
+    # Extract entries before the hallucinated range
+    awk -v rstart="$range_start" '
+    BEGIN { keep = 1; block_start = -1 }
+    /^[0-9]+$/ && !/-->/ {
+        idx = $0
+        next
+    }
+    /-->/ {
+        split($0, parts, " --> ")
+        split(parts[1], s, /[,:]/)
+        ts = s[1]*3600 + s[2]*60 + s[3]
+        if (ts >= rstart) { keep = 0 }
+        if (keep) { timestamp_line = $0 }
+        next
+    }
+    /^$/ {
+        if (keep && timestamp_line != "") {
+            print idx
+            print timestamp_line
+            print text_line
+            print ""
+        }
+        timestamp_line = ""
+        text_line = ""
+        next
+    }
+    { if (keep) text_line = $0 }
+    ' "$original" > "$tmp_out"
+
+    # Append replacement entries with timestamps offset to absolute position
+    awk -v rstart="$range_start" '
+    function fmt(total_s) {
+        hh = int(total_s / 3600)
+        mm = int((total_s % 3600) / 60)
+        ss_val = int(total_s % 60)
+        ms_val = int((total_s - int(total_s)) * 1000)
+        return sprintf("%02d:%02d:%02d,%03d", hh, mm, ss_val, ms_val)
+    }
+    /-->/ {
+        split($0, parts, " --> ")
+        split(parts[1], sa, /[,:]/)
+        split(parts[2], ea, /[,:]/)
+        ss = sa[1]*3600 + sa[2]*60 + sa[3] + sa[4]/1000 + rstart
+        es = ea[1]*3600 + ea[2]*60 + ea[3] + ea[4]/1000 + rstart
+        print fmt(ss) " --> " fmt(es)
+        next
+    }
+    { print }
+    ' "$replacement" >> "$tmp_out"
+
+    # Append entries after the hallucinated range
+    awk -v rend="$range_end" '
+    BEGIN { past = 0; buffer_idx = ""; buffer_ts = ""; buffer_text = "" }
+    /^[0-9]+$/ && !/-->/ {
+        buffer_idx = $0
+        next
+    }
+    /-->/ {
+        split($0, parts, " --> ")
+        split(parts[1], s, /[,:]/)
+        ts = s[1]*3600 + s[2]*60 + s[3]
+        if (ts >= rend) { past = 1 }
+        buffer_ts = $0
+        next
+    }
+    /^$/ {
+        if (past && buffer_ts != "") {
+            print buffer_idx
+            print buffer_ts
+            print buffer_text
+            print ""
+        }
+        buffer_idx = ""; buffer_ts = ""; buffer_text = ""
+        next
+    }
+    { buffer_text = $0 }
+    ' "$original" >> "$tmp_out"
+
+    # Renumber all entries sequentially
+    awk '
+    BEGIN { num = 0 }
+    /^[0-9]+$/ && !/-->/ {
+        num++
+        print num
+        next
+    }
+    { print }
+    ' "$tmp_out" > "$original"
+
+    rm -f "$tmp_out"
+    echo "SRT spliced: replaced ${range_start}s-${range_end}s" >> /tmp/meeting-recorder.log
+}
+
+# rebuild_txt SRT_FILE TXT_FILE
+# Regenerates plain text transcript from SRT (strips indices and timestamps).
+rebuild_txt() {
+    local srt_file="$1"
+    local txt_file="$2"
+
+    grep -v '^[0-9]*$' "$srt_file" | grep -v '^$' | grep -v '\-\->' | sed 's/^[[:space:]]*//' > "$txt_file"
+    echo "Rebuilt .txt from spliced SRT" >> /tmp/meeting-recorder.log
+}
+
 # Look for matching Zoom team chat
 find_zoom_chat() {
     local date_part="$1"  # YYYY-MM-DD
@@ -215,6 +602,18 @@ fi
 
 echo "Transcription complete: $TRANSCRIPT_FILE" >> /tmp/meeting-recorder.log
 
+# Post-transcription hallucination detection and remediation
+SRT_FILE="${DIRNAME}/${BASENAME}.srt"
+if [ -f "$SRT_FILE" ]; then
+    HALL_RANGES=$(detect_hallucination "$SRT_FILE")
+    if [ -n "$HALL_RANGES" ]; then
+        echo "Hallucination detected — initiating retranscription" >> /tmp/meeting-recorder.log
+        retranscribe_and_splice "$WAV_FILE" "$SRT_FILE"
+    else
+        echo "No hallucination detected — SRT is clean" >> /tmp/meeting-recorder.log
+    fi
+fi
+
 # Extract date and time from filename (format: YYYY-MM-DD HHMM - Title)
 DATE_PART=$(echo "$BASENAME" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
 TIME_PART=$(echo "$BASENAME" | grep -oE ' [0-9]{4} ' | tr -d ' ')
@@ -315,17 +714,34 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
 
 (
     unset CLAUDECODE
-    /Users/will/.local/bin/claude -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
-        --agent meeting-intelligence-processor \
-        --dangerously-skip-permissions \
-        >> /tmp/meeting-intelligence.log 2>&1
+    MAX_RETRIES=3
+    RETRY_DELAY=30
+    ATTEMPT=1
+    SUCCESS=false
 
-    if [ $? -eq 0 ]; then
+    while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
+        echo "Meeting intelligence attempt $ATTEMPT of $MAX_RETRIES" >> /tmp/meeting-intelligence.log
+        /Users/will/.local/bin/claude -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
+            --agent meeting-intelligence-processor \
+            --dangerously-skip-permissions \
+            >> /tmp/meeting-intelligence.log 2>&1
+
+        if [ $? -eq 0 ]; then
+            SUCCESS=true
+            break
+        fi
+
+        echo "Attempt $ATTEMPT failed, retrying in ${RETRY_DELAY}s..." >> /tmp/meeting-intelligence.log
+        ATTEMPT=$((ATTEMPT + 1))
+        sleep "$RETRY_DELAY"
+    done
+
+    if [ "$SUCCESS" = true ]; then
         osascript -e 'display notification "AI analysis complete — run meeting-tasks-extractor to review tasks" with title "Meeting Recorder" sound name "Glass"'
-        echo "Meeting intelligence completed successfully" >> /tmp/meeting-recorder.log
+        echo "Meeting intelligence completed successfully (attempt $ATTEMPT)" >> /tmp/meeting-recorder.log
     else
-        osascript -e 'display notification "AI analysis failed - check logs" with title "Meeting Recorder"'
-        echo "Meeting intelligence failed" >> /tmp/meeting-recorder.log
+        osascript -e 'display notification "AI analysis failed after 3 attempts - check logs" with title "Meeting Recorder"'
+        echo "Meeting intelligence failed after $MAX_RETRIES attempts" >> /tmp/meeting-recorder.log
     fi
 ) &
 
