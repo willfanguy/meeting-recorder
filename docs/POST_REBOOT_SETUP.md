@@ -1,96 +1,108 @@
 # Post-Reboot Setup Checklist
 
-After rebooting, complete these steps to finish the meeting recorder setup.
+After rebooting (required for BlackHole), complete these steps to finish setup.
 
-## 1. Verify BlackHole Installed
+## 1. Verify BlackHole installed
 
-Open Terminal and run:
 ```bash
 ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -i blackhole
 ```
 
-You should see "BlackHole 2ch" in the list. If not, reinstall:
-```bash
-brew reinstall blackhole-2ch
-```
+You should see "BlackHole 2ch" in the list. If not, reinstall: `brew reinstall blackhole-2ch` and reboot again.
 
-## 2. Create Audio Devices in Audio MIDI Setup
+## 2. Create audio devices in Audio MIDI Setup
 
-Open **Audio MIDI Setup** (Cmd+Space, type "Audio MIDI Setup")
+Open **Audio MIDI Setup** (Cmd+Space, type "Audio MIDI Setup").
 
-### Create Multi-Output Device
-1. Click **+** at bottom left → "Create Multi-Output Device"
+### Multi-Output Device
+1. Click **+** at bottom left -> "Create Multi-Output Device"
 2. Check your speakers/headphones
 3. Check "BlackHole 2ch"
-4. Right-click → Rename to "Meeting Output"
+4. Right-click -> Rename to "Meeting Output"
 5. Check "Drift Correction" for BlackHole
 
-### Create Aggregate Device
-1. Click **+** → "Create Aggregate Device"
-2. Check your microphone (probably "USB Advanced Audio Device" or "MacBook Air Microphone")
+### Aggregate Device
+1. Click **+** -> "Create Aggregate Device"
+2. Check your microphone (e.g. "MacBook Air Microphone" or your USB mic)
 3. Check "BlackHole 2ch"
-4. Right-click → Rename to **"Meeting Recording Input"** (exact name matters!)
+4. Right-click -> Rename to **"Meeting Recording Input"** (exact name matters!)
 5. Check "Drift Correction" for BlackHole
 
-## 3. Configure Zoom Audio Output
+## 3. Configure meeting app audio
 
-In Zoom settings → Audio → Speaker, select "Meeting Output"
+Set your meeting app's speaker to "Meeting Output":
+- **Zoom**: Settings -> Audio -> Speaker
+- **Meet**: Set system audio output to "Meeting Output" before joining
+- **Teams**: Settings -> Devices -> Speaker
 
-(Do this for any other meeting apps you use)
+## 4. Grant macOS permissions
 
-## 4. Configure MeetingBar
+The scripts use AppleScript UI automation. Grant these in System Settings -> Privacy & Security:
 
-Open MeetingBar preferences:
-- Find the "Run AppleScript" options for join/leave
-- **When joining**: `~/Repos/personal/meeting-recorder/scripts/MeetingBar-Start.applescript`
-- **When leaving**: `~/Repos/personal/meeting-recorder/scripts/MeetingBar-Stop.applescript`
+- **Microphone**: QuickTime Player
+- **Accessibility**: The app that triggers recording (MeetingBar, Raycast, or Terminal)
 
-## 5. Test the Setup
+macOS will prompt on first use. If recording fails silently, check here first.
 
-### Quick audio test:
+## 5. Configure MeetingBar (if using)
+
+Open MeetingBar preferences -> Advanced:
+- Set **event start script** to:
+  ```
+  ~/path/to/meeting-recorder/scripts/eventStartScript.applescript
+  ```
+
+This handles saving meeting metadata and starting the recording.
+
+## 6. Customize paths
+
+Edit hardcoded paths in these files (see README for details):
+- `scripts/quicktime-stop-recording.applescript` (lines 6-8) — recording and notes directories
+- `scripts/transcribe-and-process.sh` (lines 17-21) — Whisper models and notes directory
+- `scripts/eventStartScript.applescript` (line 22) — path to metadata helper script
+
+## 7. Test the setup
+
+### Quick test via command line:
 ```bash
-cd ~/Repos/personal/meeting-recorder
+cd ~/path/to/meeting-recorder
 
-# Start recording (will capture from your mic + system audio)
-./scripts/start-recording.sh
+# Start recording
+osascript scripts/quicktime-start-recording.applescript
 
-# Speak into mic, play some audio/music for a few seconds
+# Speak into your mic and play some audio for a few seconds
 
 # Stop and transcribe
-./scripts/stop-recording.sh
+osascript scripts/quicktime-stop-recording.applescript
 ```
 
-Check the output files:
-- Audio: `~/Documents/Meeting Recordings/`
-- Transcript + Note: `~/Vaults/HigherJump/4. Resources/Meeting Notes/`
+### Check output:
+- Audio file should appear in your recordings directory
+- After transcription completes, a `.md` file should appear in your meeting notes directory
+- Check the log for errors: `cat /tmp/meeting-recorder.log`
 
-### Verify transcript quality
-Open the .txt file and make sure it captured both your voice and the system audio.
-
-## 6. (Optional) Initialize Git Repo
-
+### Verify audio capture:
 ```bash
-cd ~/Repos/personal/meeting-recorder
-git init
-git add .
-git commit -m "Initial commit: meeting recorder with auto-transcription"
+# Check the recording has actual audio content
+ffmpeg -i YOUR_RECORDING.m4a -af volumedetect -f null - 2>&1 | grep max_volume
 ```
+
+If max_volume is below -40dB, audio routing isn't working — double-check your meeting app's speaker is set to "Meeting Output".
 
 ## Troubleshooting
 
-### Can't find BlackHole after reboot
-Try reinstalling: `brew reinstall blackhole-2ch`
+### BlackHole not showing up
+Reinstall and reboot: `brew reinstall blackhole-2ch`
 
-### ffmpeg can't find "Meeting Recording Input"
-The name must match exactly. Check available devices:
+### "Meeting Recording Input" not found
+The Aggregate Device name must match exactly. Check available devices:
 ```bash
-ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -A20 "audio devices"
+ffmpeg -f avfoundation -list_devices true -i "" 2>&1
 ```
 
-### Recording works but only captures mic (no system audio)
-- Make sure Zoom's speaker is set to "Meeting Output" (not your regular speakers)
-- Make sure BlackHole is checked in the Aggregate Device
+### Recording captures only mic (no meeting audio)
+- Your meeting app's speaker must be "Meeting Output" (not regular speakers)
+- BlackHole must be checked in the Aggregate Device
 
-### Transcription is empty or garbage
-- Check the audio file plays correctly in QuickTime
-- Try a larger Whisper model (small.en) for better accuracy
+### Permission denied / recording fails silently
+Check System Settings -> Privacy & Security -> Accessibility for your triggering app.

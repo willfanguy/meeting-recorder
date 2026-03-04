@@ -42,51 +42,67 @@ else
 fi
 
 echo ""
-echo "[4/5] Downloading Whisper model..."
+echo "[4/5] Downloading Whisper models..."
 MODEL_DIR="$HOME/.local/share/whisper-models"
-MODEL_FILE="$MODEL_DIR/ggml-base.en.bin"
 mkdir -p "$MODEL_DIR"
 
-if [ -f "$MODEL_FILE" ]; then
-    echo "  Model already exists: $MODEL_FILE"
+HF_BASE="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+
+# Large model (default for most meetings)
+LARGE_MODEL="$MODEL_DIR/ggml-large-v3-q5_0.bin"
+if [ -f "$LARGE_MODEL" ]; then
+    echo "  Large model already exists"
 else
-    echo "  Downloading base.en model (147MB)..."
-    curl -L -o "$MODEL_FILE" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+    echo "  Downloading large-v3-q5_0 model (~1.1GB)..."
+    curl -L -o "$LARGE_MODEL" "$HF_BASE/ggml-large-v3-q5_0.bin"
+fi
+
+# Medium model (used for routine meetings like standups/syncs)
+MEDIUM_MODEL="$MODEL_DIR/ggml-medium-q5_0.bin"
+if [ -f "$MEDIUM_MODEL" ]; then
+    echo "  Medium model already exists"
+else
+    echo "  Downloading medium-q5_0 model (~539MB)..."
+    curl -L -o "$MEDIUM_MODEL" "$HF_BASE/ggml-medium-q5_0.bin"
+fi
+
+# Base model (fallback)
+BASE_MODEL="$MODEL_DIR/ggml-base.en.bin"
+if [ -f "$BASE_MODEL" ]; then
+    echo "  Base model already exists"
+else
+    echo "  Downloading base.en model (~147MB)..."
+    curl -L -o "$BASE_MODEL" "$HF_BASE/ggml-base.en.bin"
 fi
 
 echo ""
-echo "[5/5] Setting up configuration..."
+echo "[5/5] Setting up..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ -f "$SCRIPT_DIR/config.sh" ]; then
-    echo "  config.sh already exists"
-else
-    cp "$SCRIPT_DIR/config.example.sh" "$SCRIPT_DIR/config.sh"
-    echo "  Created config.sh from template"
-    echo "  Edit config.sh to customize paths for your setup"
-fi
-
 # Make scripts executable
-chmod +x "$SCRIPT_DIR/scripts/"*.sh
+chmod +x "$SCRIPT_DIR/scripts/"*.sh 2>/dev/null || true
+chmod +x "$SCRIPT_DIR/raycast/"*.sh 2>/dev/null || true
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
 echo "Next steps:"
 echo ""
-echo "1. Edit config.sh to set your paths"
+echo "1. REBOOT your Mac (required for BlackHole to load)"
 echo ""
-echo "2. Set up audio routing in Audio MIDI Setup:"
-echo "   a. Create Multi-Output Device (speakers + BlackHole) - for hearing audio"
-echo "   b. Create Aggregate Device (mic + BlackHole) named 'Meeting Recording Input'"
+echo "2. After reboot, follow docs/POST_REBOOT_SETUP.md:"
+echo "   - Create audio devices in Audio MIDI Setup"
+echo "   - Configure meeting app audio output"
+echo "   - Grant macOS permissions"
 echo ""
-echo "3. Configure MeetingBar to run the AppleScripts:"
-echo "   - Join meeting  → scripts/MeetingBar-Start.applescript"
-echo "   - Leave meeting → scripts/MeetingBar-Stop.applescript"
+echo "3. Customize paths in the scripts (see README.md 'Customization' section)"
 echo ""
-echo "4. Test manually:"
-echo "   ./scripts/start-recording.sh"
-echo "   ./scripts/stop-recording.sh"
+echo "4. (Optional) Set up MeetingBar with:"
+echo "   Event start script -> scripts/eventStartScript.applescript"
+echo ""
+echo "5. Test manually:"
+echo "   osascript scripts/quicktime-start-recording.applescript"
+echo "   osascript scripts/quicktime-stop-recording.applescript"
 echo ""
 
 if [ "$NEEDS_REBOOT" = true ]; then
