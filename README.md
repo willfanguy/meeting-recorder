@@ -18,7 +18,7 @@ Automatically record and transcribe meetings on macOS. Integrates with MeetingBa
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/meeting-recorder.git
+git clone https://github.com/willfanguy/meeting-recorder.git
 cd meeting-recorder
 ./install.sh
 ```
@@ -65,10 +65,10 @@ Edit `config.sh` to customize:
 
 ```bash
 # Where to save audio recordings
-RECORDINGS_DIR="$HOME/Meeting Transcriptions"
+RECORDINGS_DIR="$HOME/YOUR_DIRECTORY_HERE"
 
 # Where to save meeting notes/transcripts (Obsidian vault)
-MEETING_NOTES_DIR="$HOME/Vaults/HigherJump/4. Resources/Meeting Notes"
+MEETING_NOTES_DIR="$HOME/YOUR_DIRECTORY_HERE"
 
 # Whisper model (base.en is a good balance of speed/accuracy)
 WHISPER_MODEL="$HOME/.local/share/whisper-models/ggml-base.en.bin"
@@ -107,9 +107,9 @@ Recordings start automatically when you join and transcribe when you leave.
 
 Each meeting creates:
 
-1. **Audio file**: `~/Meeting Transcriptions/2024-01-15 1400 - Meeting Name.wav`
-2. **Transcript**: `~/Meeting Transcriptions/2024-01-15 1400 - Meeting Name.txt`
-3. **Meeting note**: `~/Vaults/HigherJump/4. Resources/Meeting Notes/2024-01-15 1400 - Meeting Name.md`
+1. **Audio file**: `~/YOUR_DIRECTORY_HERE/2024-01-15 1400 - Meeting Name.wav`
+2. **Transcript**: `~/YOUR_DIRECTORY_HERE/2024-01-15 1400 - Meeting Name.txt`
+3. **Meeting note**: `~/YOUR_DIRECTORY_HERE/2024-01-15 1400 - Meeting Name.md`
 
 ### File Naming Convention
 
