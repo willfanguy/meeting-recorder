@@ -39,20 +39,26 @@ detect_hallucination() {
     local srt_file="$1"
     [ ! -f "$srt_file" ] && return 0
 
+    # Get total duration from last SRT timestamp for clamping and threshold scaling
+    local total_secs
+    total_secs=$(grep '\-\->' "$srt_file" | tail -1 | sed 's/.*--> //' | awk -F'[,:]' '{print $1*3600 + $2*60 + $3}')
+
+    # Scale threshold by duration: base 20 per 15-min block
+    # A 45-min meeting legitimately has "Yeah" 30+ times — don't false-positive
+    local duration_mins=$(( (total_secs + 59) / 60 ))
+    local scaled_threshold=$(( HALLUCINATION_THRESHOLD * (duration_mins / 15 + 1) ))
+    echo "Hallucination threshold: $scaled_threshold (base=$HALLUCINATION_THRESHOLD, duration=${duration_mins}min)" >> /tmp/meeting-recorder.log
+
     # Find lines repeated more than threshold times
     local hallucinated_lines
     hallucinated_lines=$(grep -v '^[0-9]*$' "$srt_file" | grep -v '^$' | grep -v '\-\->' \
         | sort | uniq -c | sort -rn \
-        | awk -v thresh="$HALLUCINATION_THRESHOLD" '$1 > thresh { $1=""; print substr($0,2) }')
+        | awk -v thresh="$scaled_threshold" '$1 > thresh { $1=""; print substr($0,2) }')
 
     [ -z "$hallucinated_lines" ] && return 0
 
     echo "Hallucination detected! Repeated lines:" >> /tmp/meeting-recorder.log
     echo "$hallucinated_lines" >> /tmp/meeting-recorder.log
-
-    # Get total duration from last SRT timestamp for clamping
-    local total_secs
-    total_secs=$(grep '\-\->' "$srt_file" | tail -1 | sed 's/.*--> //' | awk -F'[,:]' '{print $1*3600 + $2*60 + $3}')
 
     # Write hallucinated lines to temp file (BSD awk can't handle newlines in -v)
     local hall_tmp
@@ -136,6 +142,12 @@ retranscribe_and_splice() {
 
     echo "$ranges" | while IFS=',' read -r range_start range_end; do
         [ -z "$range_start" ] && continue
+        # Validate range: start must be less than end (inverted ranges indicate
+        # non-monotonic SRT timestamps, which would cause splice_srt to explode)
+        if [ "$range_start" -ge "$range_end" ]; then
+            echo "  Skipping invalid range: ${range_start}s - ${range_end}s (start >= end)" >> /tmp/meeting-recorder.log
+            continue
+        fi
         local duration=$((range_end - range_start))
         echo "Retranscribing range: ${range_start}s - ${range_end}s (${duration}s)" >> /tmp/meeting-recorder.log
 
@@ -577,7 +589,15 @@ if [ "${DURATION_SECS:-0}" -gt "$CHUNK_THRESHOLD" ]; then
             echo "" >> "$TRANSCRIPT_FILE"
         fi
         if [ -f "${CHUNK}.srt" ]; then
-            cat "${CHUNK}.srt" >> "$SRT_FILE"
+            # Offset timestamps by chunk position (each chunk's SRT starts at 0:00)
+            CHUNK_BASENAME=$(basename "$CHUNK" .wav)
+            CHUNK_IDX=${CHUNK_BASENAME#chunk_}
+            CHUNK_OFFSET=$(( (10#$CHUNK_IDX - 1) * CHUNK_SIZE ))
+            if [ "$CHUNK_OFFSET" -eq 0 ]; then
+                cat "${CHUNK}.srt" >> "$SRT_FILE"
+            else
+                offset_srt_timestamps "${CHUNK}.srt" "$CHUNK_OFFSET" >> "$SRT_FILE"
+            fi
         fi
     done
 

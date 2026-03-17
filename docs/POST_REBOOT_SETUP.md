@@ -14,19 +14,34 @@ You should see "BlackHole 2ch" in the list. If not, reinstall: `brew reinstall b
 
 Open **Audio MIDI Setup** (Cmd+Space, type "Audio MIDI Setup").
 
-### Multi-Output Device
+### Multi-Output Device ("Meeting Output")
 1. Click **+** at bottom left -> "Create Multi-Output Device"
-2. Check your speakers/headphones
+2. Check your speakers/headphones (e.g. "USB Advanced Audio Device")
 3. Check "BlackHole 2ch"
 4. Right-click -> Rename to "Meeting Output"
-5. Check "Drift Correction" for BlackHole
+5. Set **Clock Source** to your speakers/headphones (the hardware device, NOT BlackHole)
+6. Leave **Drift Correction OFF** for all sub-devices
 
-### Aggregate Device
+### Aggregate Device ("Meeting Recording Input")
 1. Click **+** -> "Create Aggregate Device"
-2. Check your microphone (e.g. "MacBook Air Microphone" or your USB mic)
+2. Check **one** microphone — your USB mic if at a desk, or MacBook Air Microphone if mobile
 3. Check "BlackHole 2ch"
 4. Right-click -> Rename to **"Meeting Recording Input"** (exact name matters!)
-5. Check "Drift Correction" for BlackHole
+5. Clock Source can remain on BlackHole (default) — this works fine
+6. Leave **Drift Correction OFF** for all sub-devices
+7. Uncheck any "Offline Device" entries that appear (stale references to disconnected devices)
+8. Only include the devices you need — extra sub-devices (e.g. both built-in and USB mic) cause instability
+
+> **Key settings that matter:**
+> - **Meeting Output clock source** should be your hardware speakers (USB Advanced Audio
+>   Device), NOT BlackHole. This ensures stable output timing.
+> - **Meeting Recording Input clock source** can stay on BlackHole (the default). This
+>   works fine in practice.
+> - **Drift Correction must be OFF** on both devices. On macOS Sequoia (and possibly
+>   earlier), enabling drift correction for BlackHole causes the audio stream to silently
+>   drop after ~20 minutes. Recordings appear to continue but capture silence.
+> - **Minimize sub-devices.** Only include one mic + BlackHole in the aggregate. Extra
+>   sub-devices (both built-in and USB mic, offline devices) cause instability.
 
 ## 3. Configure meeting app audio
 
@@ -99,6 +114,16 @@ The Aggregate Device name must match exactly. Check available devices:
 ```bash
 ffmpeg -f avfoundation -list_devices true -i "" 2>&1
 ```
+
+### Remote participants' audio sounds choppy/glitchy
+- Make sure **Drift Correction is OFF** for all sub-devices (it's broken on recent macOS)
+- Remove any "Offline Device" (red) entries from the aggregate — stale sub-devices cause instability
+- Only include one mic in the aggregate — extra sub-devices compound timing issues
+- Check that Meeting Output clock source is your hardware speakers, not BlackHole
+
+### Recording drops audio after ~20 minutes (silent tail)
+- Almost certainly **Drift Correction is enabled** — disable it for all sub-devices in both devices
+- Verify with: recording appears to continue but `ffmpeg -af silencedetect` shows long silence at end
 
 ### Recording captures only mic (no meeting audio)
 - Your meeting app's speaker must be "Meeting Output" (not regular speakers)
