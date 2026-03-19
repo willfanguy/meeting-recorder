@@ -520,6 +520,71 @@ if ! wait_for_valid_audio "$AUDIO_FILE"; then
     exit 1
 fi
 
+# --- Part-file concatenation ---
+# If partial recordings exist (e.g., from an audio daemon restart mid-meeting),
+# find and prepend them before transcription. Matches files with similar names
+# in the same directory: "- part1.m4a", "- part 1.m4a", "- partial.m4a",
+# " (1).m4a" suffixes, etc.
+find_part_files() {
+    local base="$1"
+    local dir="$2"
+    local parts=()
+
+    # Look for files that start with the same basename + a suffix before .m4a
+    # Sort alphabetically so parts are in order (part1 before part2, etc.)
+    while IFS= read -r -d '' f; do
+        # Skip the main file itself
+        [ "$f" = "${dir}/${base}.m4a" ] && continue
+        parts+=("$f")
+    done < <(find "$dir" -maxdepth 1 -name "${base}*" -name "*.m4a" -print0 | sort -z)
+
+    # Also check for files matching the base WITHOUT trailing suffix variations
+    # e.g., base="2026-03-18 1200 - Meeting Name" matches
+    #        "2026-03-18 1200 - Meeting Name - part1.m4a"
+    #        "2026-03-18 1200 - Meeting Name (2).m4a"
+    printf '%s\n' "${parts[@]}"
+}
+
+PART_FILES=$(find_part_files "$BASENAME" "$DIRNAME")
+if [ -n "$PART_FILES" ]; then
+    echo "Found partial recording files:" >> /tmp/meeting-recorder.log
+    echo "$PART_FILES" >> /tmp/meeting-recorder.log
+
+    # Build ffmpeg concat list: part files first (sorted), then the main recording last
+    CONCAT_LIST=$(mktemp /tmp/concat-list-XXXXXX.txt)
+    while IFS= read -r part; do
+        [ -z "$part" ] && continue
+        echo "file '$part'" >> "$CONCAT_LIST"
+        echo "  Prepending: $(basename "$part")" >> /tmp/meeting-recorder.log
+    done <<< "$PART_FILES"
+    echo "file '$AUDIO_FILE'" >> "$CONCAT_LIST"
+
+    COMBINED_FILE="${DIRNAME}/${BASENAME}-combined.m4a"
+    echo "Concatenating $(echo "$PART_FILES" | wc -l | tr -d ' ') part(s) + main recording..." >> /tmp/meeting-recorder.log
+    osascript -e 'display notification "Combining partial recordings..." with title "Meeting Recorder"'
+
+    if ffmpeg -y -f concat -safe 0 -i "$CONCAT_LIST" -c copy "$COMBINED_FILE" 2>> /tmp/meeting-recorder.log; then
+        # Replace the main file with the combined version
+        mv "$COMBINED_FILE" "$AUDIO_FILE"
+        echo "Combined recording saved as: $AUDIO_FILE" >> /tmp/meeting-recorder.log
+
+        # Move part files to processed subfolder
+        PROCESSED_DIR="${DIRNAME}/processed"
+        mkdir -p "$PROCESSED_DIR"
+        while IFS= read -r part; do
+            [ -z "$part" ] && continue
+            mv "$part" "$PROCESSED_DIR/"
+            echo "  Moved $(basename "$part") to processed/" >> /tmp/meeting-recorder.log
+        done <<< "$PART_FILES"
+    else
+        echo "WARNING: Concatenation failed — proceeding with main recording only" >> /tmp/meeting-recorder.log
+        osascript -e 'display notification "⚠️ Could not combine parts — using main recording only" with title "Meeting Recorder"'
+        rm -f "$COMBINED_FILE"
+    fi
+
+    rm -f "$CONCAT_LIST"
+fi
+
 # Convert m4a to wav for Whisper
 echo "Converting to WAV..." >> /tmp/meeting-recorder.log
 ffmpeg -y -i "$AUDIO_FILE" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV_FILE" 2>> /tmp/meeting-recorder.log
