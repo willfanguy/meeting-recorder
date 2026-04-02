@@ -81,6 +81,20 @@ on run
 
         do shell script "echo " & startHHMM & " > /tmp/meeting-recorder-start-time.txt"
 
+        -- Start live transcript (yap listen → browser viewer) in background
+        try
+            set meetingLabel to "Meeting"
+            try
+                set metaCheck to do shell script "[ -f " & quoted form of activeSession & " ] && echo yes || echo no"
+                if metaCheck is "yes" then
+                    set meetingLabel to do shell script "python3 -c \"import json; print(json.load(open('" & activeSession & "'))['title'])\""
+                end if
+            end try
+            do shell script "/Users/will/Repos/personal/meeting-recorder/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1 &"
+        on error liveErr
+            do shell script "echo 'Live transcript start error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
+        end try
+
         display notification "Recording started" with title "Meeting Recorder" sound name "Ping"
         return "Recording started at " & startTime
 

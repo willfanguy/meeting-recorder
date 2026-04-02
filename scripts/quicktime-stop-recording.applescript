@@ -164,6 +164,13 @@ on run
         display notification "Saved: " & fileName with title "Meeting Recorder"
         do shell script "echo 'Recording saved: " & finalPath & "' >> /tmp/meeting-recorder.log"
 
+        -- Stop live transcript
+        try
+            do shell script "/Users/will/Repos/personal/meeting-recorder/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
+        on error liveErr
+            do shell script "echo 'Live transcript stop error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
+        end try
+
         -- Trigger transcription in background
         my triggerTranscription(finalPath)
 

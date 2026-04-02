@@ -1,0 +1,37 @@
+{
+  "_comment": "Domain-specific transcription corrections. Applied to .txt and .srt files after transcription. Case-insensitive matching, case-preserving replacement. Organized by category for maintainability.",
+
+  "companies": {
+    "glass door": "Glassdoor",
+    "glassdoor": "Glassdoor"
+  },
+
+  "products_and_projects": {
+    "super match": "SuperMatch",
+    "superman": "SuperMatch",
+    "supermatters": "SuperMatch",
+    "super fit": "SuperFit",
+    "project door": "Project Door",
+    "jobs for you": "JobsForYou",
+    "jobs4you": "JobsForYou"
+  },
+
+  "domain_terms": {
+    "barker barker": "blocker",
+    "Baya": "beta",
+    "Gleen": "Glean",
+    "co-complete": "code complete",
+    "but backs": "bug bashes",
+    "evalves": "evals",
+    "agentic": "agentic"
+  },
+
+  "people": {
+    "Aaron Delevic": "Aron Delevic",
+    "Karen Hoff": "Kaarin Hoff",
+    "Corinne Hoff": "Kaarin Hoff",
+    "Erin Breyer": "Eric Breier",
+    "Erin Briar": "Eric Breier",
+    "Julie Wilding": "Judith Wilding"
+  }
+}

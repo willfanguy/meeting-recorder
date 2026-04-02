@@ -699,6 +699,15 @@ if [ -f "$SRT_FILE" ]; then
     fi
 fi
 
+# Apply domain-specific corrections (fix common transcription errors)
+CORRECTIONS_SCRIPT="$(dirname "$0")/apply-domain-corrections.py"
+if [ -f "$CORRECTIONS_SCRIPT" ]; then
+    echo "Applying domain corrections..." >> /tmp/meeting-recorder.log
+    /opt/homebrew/bin/python3 "$CORRECTIONS_SCRIPT" "$TRANSCRIPT_FILE" 2>> /tmp/meeting-recorder.log
+else
+    echo "Domain corrections script not found, skipping" >> /tmp/meeting-recorder.log
+fi
+
 # Extract date and time from filename (format: YYYY-MM-DD HHMM - Title)
 DATE_PART=$(echo "$BASENAME" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
 TIME_PART=$(echo "$BASENAME" | grep -oE ' [0-9]{4} ' | tr -d ' ')

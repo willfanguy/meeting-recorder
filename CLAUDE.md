@@ -132,8 +132,22 @@ The meeting-intelligence-processor also knows to check for Zoom chat — both in
 
 - Converts m4a to wav (16kHz mono for Whisper)
 - Runs whisper-cli for transcription
+- Runs hallucination detection + retranscription if needed
+- **Applies domain corrections** (see below)
 - Creates meeting note with frontmatter and transcript
 - Runs meeting-intelligence-processor in background
+
+### apply-domain-corrections.py
+
+Post-transcription correction of known domain-specific errors. Runs automatically
+after Whisper (or any future transcription engine) finishes.
+
+- **Dictionary**: `scripts/domain-corrections.json` — organized by category (companies, products, domain terms, people)
+- **Behavior**: Case-insensitive whole-word matching, processes both .txt and .srt files
+- **Logging**: All corrections logged to `/tmp/meeting-recorder.log`
+- **Adding corrections**: Edit the JSON dictionary — no code changes needed. Add entries as `"wrong": "right"` under the appropriate category.
+
+Common corrections include: "glass door" → "Glassdoor", "supermatters" → "SuperMatch", "co-complete" → "code complete", name spelling fixes for team members.
 
 ## Archived Scripts
 
