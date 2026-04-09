@@ -3,8 +3,9 @@
 -- Meeting Audio Recording - Stop (ffmpeg)
 -- Stops ffmpeg recording, names file from metadata, triggers transcription
 
-property recordingsFolder : "/Users/will/Meeting Transcriptions/"
-property dailyNotesFolder : "/Users/will/Vaults/HigherJump/4. Resources/Daily Notes/"
+-- Configure these paths for your setup:
+property recordingsFolder : (POSIX path of (path to home folder)) & "Meeting Transcriptions/"
+property dailyNotesFolder : (POSIX path of (path to home folder)) & "Vaults/HigherJump/4. Resources/Daily Notes/"  -- Update to your Obsidian vault path
 
 on run
     try
@@ -172,7 +173,7 @@ on run
 
         -- Stop live transcript
         try
-            do shell script "/Users/will/Repos/personal/meeting-recorder/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
+            do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
         on error liveErr
             do shell script "echo 'Live transcript stop error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
         end try
@@ -276,7 +277,7 @@ end sanitizeFilename
 on triggerTranscription(audioPath)
     try
         display notification "Starting transcription..." with title "Meeting Recorder"
-        do shell script "/Users/will/Repos/personal/meeting-recorder/scripts/transcribe-and-process.sh " & quoted form of audioPath & " >> /tmp/meeting-recorder.log 2>&1 &"
+        do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/transcribe-and-process.sh " & quoted form of audioPath & " >> /tmp/meeting-recorder.log 2>&1 &"
     on error errMsg
         do shell script "echo 'Transcription trigger error: " & errMsg & "' >> /tmp/meeting-recorder.log"
     end try

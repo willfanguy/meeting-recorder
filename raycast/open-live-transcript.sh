@@ -25,7 +25,7 @@ fi
 
 # Open in Obsidian via URI scheme
 # Encode the vault-relative path for the Obsidian URI
-VAULT_PATH="/Users/will/Vaults/HigherJump/"
+VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Vaults/HigherJump/}"  # Set OBSIDIAN_VAULT_PATH in your env or update this default
 REL_PATH="${LIVE_FILE#$VAULT_PATH}"
 ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$REL_PATH'))")
 open "obsidian://open?vault=HigherJump&file=${ENCODED}"

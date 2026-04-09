@@ -85,7 +85,7 @@ on run
                 end if
             end try
             tell application "Terminal"
-                do script "/Users/will/Repos/personal/meeting-recorder/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
+                do script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
             end tell
         on error liveErr
             do shell script "echo 'Live transcript start error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"

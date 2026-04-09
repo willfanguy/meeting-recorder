@@ -432,7 +432,7 @@ find_zoom_chat() {
     local date_part="$1"  # YYYY-MM-DD
     local time_part="$2"  # HHMM
     local title="$3"      # Meeting Title
-    local zoom_dir="/Users/will/Documents/Zoom"
+    local zoom_dir="$HOME/Documents/Zoom"
 
     [ ! -d "$zoom_dir" ] && return 1
 
@@ -855,7 +855,7 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
 
     while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
         echo "Meeting intelligence attempt $ATTEMPT of $MAX_RETRIES" >> /tmp/meeting-intelligence.log
-        /Users/will/.local/bin/claude -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
+        "${CLAUDE_BIN:-$(which claude 2>/dev/null || echo "$HOME/.local/bin/claude")}" -p "BACKGROUND_MODE=true — Process this meeting transcript and add an intelligence summary BEFORE the ## Transcript section. The file is at: $NOTE_FILE" \
             --agent meeting-intelligence-processor \
             --dangerously-skip-permissions \
             >> /tmp/meeting-intelligence.log 2>&1
@@ -893,3 +893,9 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
 ) &
 
 echo "Meeting intelligence started in background" >> /tmp/meeting-recorder.log
+
+# Sync meeting note to total-recall on Unraid
+SYNC_SCRIPT="$HOME/Repos/total-recall/sync/sync-meeting-note.sh"
+if [[ -x "$SYNC_SCRIPT" ]]; then
+    "$SYNC_SCRIPT" "$MEETING_NOTE" >> /tmp/meeting-recorder.log 2>&1 &
+fi
