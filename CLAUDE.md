@@ -37,6 +37,23 @@ ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -i meeting
 
 # Check audio file has content (not silence)
 ffmpeg -i file.m4a -af volumedetect -f null -
+
+# Build the Swift CLI (Core Audio Taps recorder)
+cd MeetingRecorder && swift build -c release
+
+# Test the Swift CLI (records system audio, Ctrl+C to stop)
+MeetingRecorder/.build/release/MeetingRecorder --output /tmp/test.m4a --pid-file /tmp/test.pid
+
+# Enroll speakers into the voice embedding library
+scripts/.venv/bin/python scripts/enroll-speakers.py --list
+scripts/.venv/bin/python scripts/enroll-speakers.py \
+  --diarization-json "path/to/recording.diarization.json" \
+  --assign "Speaker A=Will Fanguy" "Speaker B=Judith Wilding"
+
+# Run all tests
+scripts/.venv/bin/python scripts/test_diarize.py && \
+  scripts/.venv/bin/python scripts/test_speaker_library.py && \
+  scripts/.venv/bin/python scripts/test_identification_integration.py
 ```
 
 ## Configuration
@@ -241,8 +258,8 @@ Old ffmpeg/BlackHole shell scripts (pre-QuickTime era) are in `scripts/archive/`
 
 1. **ffmpeg + BlackHole shell scripts** (original) — unreliable, often captured silence
 2. **QuickTime + AppleScript UI automation** — more reliable but fragile System Events popup menu timing
-3. **ffmpeg + AppleScript wrapper** (current, 2026-04-09) — headless ffmpeg, no UI automation
-4. **Swift CLI with Core Audio Taps** (planned) — eliminates BlackHole dependency entirely
+3. **ffmpeg + AppleScript wrapper** (2026-04-09) — headless ffmpeg, no UI automation
+4. **Swift CLI with Core Audio Taps** (built 2026-04-09, integration pending) — eliminates BlackHole dependency entirely. Binary at `MeetingRecorder/.build/release/MeetingRecorder`. Build: `cd MeetingRecorder && swift build -c release`
 
 ## Project Tracking & Roadmap
 
@@ -250,9 +267,9 @@ Obsidian project index: `~/Vaults/HigherJump/2. Projects/Meeting Recorder.md`
 
 Active task notes (query `projects` field for `[[Meeting Recorder]]` in `4. Resources/Work Log/Tasks/`):
 
-- **Swift Meeting Recorder CLI** (open, P3) — Replace ffmpeg+BlackHole with a native Swift CLI using Core Audio Taps (macOS 14.2+). Eliminates virtual audio device dependency entirely. Three-phase plan: system audio only → add mic → integration.
-- **Meeting Transcript Diarization** (in-progress, P3) — Speaker diarization via pyannote-audio. Core implementation done (scripts/diarize-transcript.py), integrated into pipeline. Generic labels (Speaker A/B/C) — name mapping deferred to Speaker Embedding Library.
-- **Speaker Embedding Library** (open, P4) — Map pyannote voice embeddings to real names for automatic speaker identification. Depends on diarization pipeline. Would use cosine similarity against a local JSON library of enrolled embeddings.
+- **Swift Meeting Recorder CLI** (built, integration pending, P3) — Native Core Audio Taps CLI at `MeetingRecorder/`. System audio capture works. Remaining: wire into AppleScript entry points (replace ffmpeg command), add microphone capture (Phase 3b), install to PATH.
+- **Meeting Transcript Diarization** (done, P3) — Speaker diarization via pyannote-audio with 256-dim embedding extraction. Integrated into pipeline. Speaker identification via embedding library auto-assigns real names.
+- **Speaker Embedding Library** (done, P4) — `scripts/speaker_library.py` + `scripts/enroll-speakers.py`. Cosine similarity matching, running-average enrollment, auto-enrollment of identified speakers. Library at `~/.config/meeting-recorder/speaker-embeddings.json`.
 
 Related skills (in `~/.claude/skills/`): `quicktime-applescript-recording`, `ffmpeg-aggregate-device-silent-downmix`, `pyannote-audio-4x-setup`, `blackhole-silent-loopback-failure`, `meeting-transcription-debugging`, `aggregate-device-choppy-audio`, `yap-vs-whisper-transcription`
 
