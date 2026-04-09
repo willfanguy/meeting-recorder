@@ -32,7 +32,7 @@ on run
             do shell script "/opt/homebrew/bin/ffmpeg -nostdin -y -f avfoundation -i ':Meeting Recording Input' -af 'pan=1c|c0=c0+c1+c2+c3,aresample=async=1,alimiter=limit=0.9' -c:a aac -b:a 128k " & quoted form of tempAudioFile & " > /tmp/ffmpeg-recording.log 2>&1 & echo $! > " & quoted form of pidFile
             do shell script "echo 'Using ffmpeg fallback (meeting-recorder CLI not found)' >> /tmp/meeting-recorder.log"
         else
-            do shell script recorderBin & " --output " & quoted form of tempAudioFile & " --pid-file " & quoted form of pidFile & " > /tmp/meeting-recorder-cli.log 2>&1 &"
+            do shell script recorderBin & " --output " & quoted form of tempAudioFile & " --pid-file " & quoted form of pidFile & " --include-mic > /tmp/meeting-recorder-cli.log 2>&1 &"
         end if
         delay 1
 

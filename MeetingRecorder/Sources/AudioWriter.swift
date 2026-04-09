@@ -20,6 +20,8 @@ enum AudioWriterError: Error, CustomStringConvertible {
 /// Handles Float32 → AAC conversion via ExtAudioFile.
 class AudioWriter {
     private let ringBuffer: RingBuffer
+    private let micRingBuffer: RingBuffer?
+    private let micGain: Float
     private let writerQueue = DispatchQueue(label: "com.meeting-recorder.writer")
     private var writerTimer: DispatchSourceTimer?
     private var extAudioFile: ExtAudioFileRef?
@@ -30,8 +32,22 @@ class AudioWriter {
     private let conversionBufferSize: Int
     private let conversionBuffer: UnsafeMutableRawPointer
 
-    init(ringBuffer: RingBuffer, inputFormat: AudioStreamBasicDescription, outputPath: String) {
+    // Mic mixing buffer (mono Float32, same frame count as conversion buffer)
+    private let micBufferSize: Int
+    private let micBuffer: UnsafeMutableRawPointer?
+
+    /// Create an audio writer.
+    /// - Parameters:
+    ///   - ringBuffer: Ring buffer for system audio (from Core Audio Tap IOProc)
+    ///   - inputFormat: Format of the system audio (typically 48kHz stereo Float32)
+    ///   - outputPath: Path for the output M4A file
+    ///   - micRingBuffer: Optional ring buffer for microphone audio (mono Float32)
+    ///   - micGain: Gain applied to mic audio when mixing (0.0-1.0, default 0.5)
+    init(ringBuffer: RingBuffer, inputFormat: AudioStreamBasicDescription, outputPath: String,
+         micRingBuffer: RingBuffer? = nil, micGain: Float = 0.5) {
         self.ringBuffer = ringBuffer
+        self.micRingBuffer = micRingBuffer
+        self.micGain = micGain
         self.inputFormat = inputFormat
         self.outputPath = outputPath
 
@@ -42,10 +58,20 @@ class AudioWriter {
         self.conversionBuffer = UnsafeMutableRawPointer.allocate(
             byteCount: conversionBufferSize, alignment: 16
         )
+
+        // Mic buffer: mono Float32 (4 bytes per frame)
+        if micRingBuffer != nil {
+            self.micBufferSize = framesPerChunk * MemoryLayout<Float>.stride
+            self.micBuffer = UnsafeMutableRawPointer.allocate(byteCount: micBufferSize, alignment: 16)
+        } else {
+            self.micBufferSize = 0
+            self.micBuffer = nil
+        }
     }
 
     deinit {
         conversionBuffer.deallocate()
+        micBuffer?.deallocate()
     }
 
     func start() throws {
@@ -137,6 +163,7 @@ class AudioWriter {
         guard let file = extAudioFile else { return }
 
         let bytesPerFrame = Int(inputFormat.mBytesPerFrame)
+        let channelCount = Int(inputFormat.mChannelsPerFrame)
         guard bytesPerFrame > 0 else { return }
 
         while ringBuffer.availableBytes >= bytesPerFrame {
@@ -149,6 +176,28 @@ class AudioWriter {
             let bytesRead = ringBuffer.read(conversionBuffer, count: bytesToRead)
             let framesRead = bytesRead / bytesPerFrame
             guard framesRead > 0 else { break }
+
+            // Mix microphone audio into system audio if available
+            if let micRing = micRingBuffer, let micBuf = micBuffer {
+                // Read matching frame count from mic ring buffer (mono Float32)
+                let micBytesNeeded = framesRead * MemoryLayout<Float>.stride
+                let micBytesRead = micRing.read(micBuf, count: micBytesNeeded)
+                let micFramesRead = micBytesRead / MemoryLayout<Float>.stride
+
+                if micFramesRead > 0 {
+                    let sysPtr = conversionBuffer.assumingMemoryBound(to: Float.self)
+                    let micPtr = micBuf.assumingMemoryBound(to: Float.self)
+
+                    // Add mic (mono) to each channel of system audio (interleaved)
+                    for frame in 0..<micFramesRead {
+                        let micSample = micPtr[frame] * micGain
+                        for ch in 0..<channelCount {
+                            let idx = frame * channelCount + ch
+                            sysPtr[idx] = min(max(sysPtr[idx] + micSample, -1.0), 1.0)
+                        }
+                    }
+                }
+            }
 
             // Write to ExtAudioFile (handles Float32 → AAC conversion)
             var bufferList = AudioBufferList(

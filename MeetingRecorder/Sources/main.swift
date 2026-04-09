@@ -8,6 +8,8 @@ struct Config {
     var outputPath = "/tmp/meeting-recording-temp.m4a"
     var pidFile: String? = nil
     var mute = false
+    var includeMic = false
+    var micGain: Float = 0.5
 }
 
 func parseArgs() -> Config {
@@ -30,6 +32,14 @@ func parseArgs() -> Config {
             config.pidFile = value
         case "--mute":
             config.mute = true
+        case "--include-mic":
+            config.includeMic = true
+        case "--mic-gain":
+            guard let value = args.popFirst(), let gain = Float(value) else {
+                fputs("Error: --mic-gain requires a number (0.0-1.0)\n", stderr)
+                exit(1)
+            }
+            config.micGain = min(max(gain, 0.0), 1.0)
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -57,12 +67,14 @@ func printUsage() {
     Options:
       --output, -o PATH   Output file path (default: /tmp/meeting-recording-temp.m4a)
       --pid-file PATH     Write PID to this file (for external stop scripts)
+      --include-mic       Also capture microphone audio (mixed into output)
+      --mic-gain FLOAT    Microphone gain when mixing (0.0-1.0, default: 0.5)
       --mute              Mute system audio while recording
       --help, -h          Show this help
 
     Examples:
       MeetingRecorder --output recording.m4a --pid-file /tmp/recorder.pid
-      MeetingRecorder -o /tmp/meeting.m4a
+      MeetingRecorder -o /tmp/meeting.m4a --include-mic
 
     """
     fputs(usage, stderr)
@@ -112,13 +124,34 @@ guard let deviceID = tapManager.aggregateDeviceID,
     exit(1)
 }
 
-// 2. Set up ring buffer and file writer
+// 2. Set up ring buffers, optional mic capture, and file writer
 let ringBuffer = RingBuffer()
-let writer = AudioWriter(ringBuffer: ringBuffer, inputFormat: tapFormat, outputPath: config.outputPath)
+var micRingBuffer: RingBuffer? = nil
+var micCapture: MicrophoneCapture? = nil
+
+if config.includeMic {
+    let micRing = RingBuffer()
+    micRingBuffer = micRing
+    let mic = MicrophoneCapture(ringBuffer: micRing)
+    do {
+        let micFormat = try mic.start()
+        log("Mic capture active: \(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch, gain=\(config.micGain)")
+        micCapture = mic
+    } catch {
+        fputs("Warning: Mic capture failed (\(error)), continuing with system audio only\n", stderr)
+        log("Mic capture failed (non-fatal): \(error)")
+    }
+}
+
+let writer = AudioWriter(
+    ringBuffer: ringBuffer, inputFormat: tapFormat, outputPath: config.outputPath,
+    micRingBuffer: micRingBuffer, micGain: config.micGain
+)
 do {
     try writer.start()
 } catch {
     fputs("Error: \(error)\n", stderr)
+    micCapture?.stop()
     tapManager.teardown()
     exit(1)
 }
@@ -169,6 +202,7 @@ SignalHandler.install {
     AudioDeviceStop(deviceID, procID)
     AudioDeviceDestroyIOProcID(deviceID, procID)
 
+    micCapture?.stop()
     writer.stop()
     tapManager.teardown()
 
