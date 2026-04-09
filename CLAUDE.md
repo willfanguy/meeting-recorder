@@ -246,7 +246,9 @@ After domain corrections, the pipeline optionally runs speaker diarization to la
 - **Setup**: Run `scripts/setup-diarization.sh` once to create the venv and install dependencies
 - **Fallback**: If venv, token, or model is missing, diarization is silently skipped — unlabeled transcript continues through pipeline
 - **Output**: Rewrites .txt with speaker labels (`**Speaker A:** text`), updates .srt with `[Speaker A]` prefixes, writes `.diarization.json` sidecar
-- **Speaker labels**: Generic (Speaker A/B/C) — the meeting-intelligence-processor can infer real names from conversational context
+- **Speaker labels**: Auto-identified from voice embedding library when available, otherwise generic (Speaker A/B/C)
+- **Embeddings**: 256-dim clustering centroids persisted in `.diarization.json` sidecar for speaker identification
+- **Identification**: `scripts/speaker_library.py` matches embeddings against enrolled speakers via cosine similarity (threshold 0.75)
 - **Performance**: ~3-8 minutes on CPU, faster with MPS GPU acceleration (Apple Silicon)
 - **Hint**: If MeetingBar provides `attendee_count`, it's passed as `--num-speakers` to improve accuracy
 
@@ -259,7 +261,7 @@ Old ffmpeg/BlackHole shell scripts (pre-QuickTime era) are in `scripts/archive/`
 1. **ffmpeg + BlackHole shell scripts** (original) — unreliable, often captured silence
 2. **QuickTime + AppleScript UI automation** — more reliable but fragile System Events popup menu timing
 3. **ffmpeg + AppleScript wrapper** (2026-04-09) — headless ffmpeg, no UI automation
-4. **Swift CLI with Core Audio Taps** (built 2026-04-09, integration pending) — eliminates BlackHole dependency entirely. Binary at `MeetingRecorder/.build/release/MeetingRecorder`. Build: `cd MeetingRecorder && swift build -c release`
+4. **Swift CLI with Core Audio Taps** (current, 2026-04-09) — eliminates BlackHole dependency entirely. System audio + mic capture, M4A output. Installed at `~/.local/bin/meeting-recorder`. Build: `cd MeetingRecorder && swift build -c release`. AppleScript uses this by default with ffmpeg fallback.
 
 ## Project Tracking & Roadmap
 
