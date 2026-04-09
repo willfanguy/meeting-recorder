@@ -44,3 +44,12 @@ RUN_MEETING_INTELLIGENCE="true"
 #   https://huggingface.co/pyannote/speaker-diarization-3.1
 #   https://huggingface.co/pyannote/segmentation-3.0
 HF_TOKEN=""
+
+# Speaker identification via voice embedding library
+# The library maps speaker voice embeddings to real names for auto-identification
+# Enroll speakers with: scripts/.venv/bin/python scripts/enroll-speakers.py --help
+SPEAKER_LIBRARY="$HOME/.config/meeting-recorder/speaker-embeddings.json"
+
+# Cosine similarity threshold for speaker identification (0.0 to 1.0)
+# Higher = more conservative (fewer false matches). Start at 0.75 and tune.
+SPEAKER_ID_THRESHOLD="0.75"

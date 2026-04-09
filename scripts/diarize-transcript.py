@@ -261,7 +261,11 @@ def main():
     parser.add_argument("--num-speakers", type=int, default=None,
                         help="Expected number of speakers (improves accuracy)")
     parser.add_argument("--participants", type=str, default=None,
-                        help="Participant names for context (not used for voice matching)")
+                        help="Comma-separated participant names (soft prior for identification)")
+    parser.add_argument("--speaker-library", type=str, default=None,
+                        help="Path to speaker embedding library JSON")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Cosine similarity threshold for speaker identification (default: 0.75)")
     args = parser.parse_args()
 
     # Validate inputs
@@ -314,7 +318,7 @@ def main():
         else:
             diarization = result
 
-        # Build speaker map
+        # Build speaker map (generic labels: Speaker A, Speaker B, ...)
         speaker_map = build_speaker_map(diarization)
         speaker_count = len(speaker_map)
         log(f"Diarization found {speaker_count} speakers: {list(speaker_map.values())}")
@@ -323,6 +327,70 @@ def main():
             log("Diarization found no speakers — skipping label assignment")
             print("DIARIZATION_FAILED: no speakers detected")
             return
+
+        # --- Speaker identification via embedding library ---
+        identified_count = 0
+        if (diarize_output is not None
+                and diarize_output.speaker_embeddings is not None
+                and diarize_output.speaker_embeddings.shape[0] > 0):
+            try:
+                from speaker_library import SpeakerLibrary, DEFAULT_LIBRARY_PATH, DEFAULT_THRESHOLD
+
+                lib_path = args.speaker_library or os.environ.get(
+                    "SPEAKER_LIBRARY_PATH", DEFAULT_LIBRARY_PATH
+                )
+                threshold = args.threshold or float(os.environ.get(
+                    "SPEAKER_ID_THRESHOLD", DEFAULT_THRESHOLD
+                ))
+
+                lib = SpeakerLibrary(path=lib_path)
+                lib.load()
+
+                if len(lib) > 0:
+                    embeddings = diarize_output.speaker_embeddings
+                    labels = diarization.labels()
+
+                    # Build dict of {friendly_label: embedding}
+                    emb_dict = {}
+                    for i, label in enumerate(labels):
+                        if i < embeddings.shape[0]:
+                            friendly = speaker_map[label]
+                            emb_dict[friendly] = embeddings[i]
+
+                    results = lib.identify_all(emb_dict, threshold=threshold)
+
+                    # Replace generic labels with real names
+                    for pyannote_id, friendly_label in list(speaker_map.items()):
+                        if friendly_label in results:
+                            name, confidence = results[friendly_label]
+                            if name is not None:
+                                speaker_map[pyannote_id] = name
+                                identified_count += 1
+                                log(f"Speaker identified: {friendly_label} -> {name} (confidence: {confidence:.3f})")
+                            else:
+                                log(f"Speaker unidentified: {friendly_label} (best match: {confidence:.3f})")
+
+                    # Auto-enroll identified speakers (incremental learning)
+                    for pyannote_id, name in speaker_map.items():
+                        if name in lib:  # Only update known speakers
+                            idx = labels.index(pyannote_id) if pyannote_id in labels else -1
+                            if 0 <= idx < embeddings.shape[0]:
+                                lib.enroll(name, embeddings[idx])
+
+                    if identified_count > 0:
+                        lib.save()
+                        log(f"Auto-enrolled {identified_count} identified speakers into library")
+                else:
+                    log(f"Speaker library empty at {lib_path} — using generic labels")
+
+            except ImportError:
+                log("speaker_library module not available — using generic labels")
+            except Exception as id_err:
+                log(f"Speaker identification error (non-fatal): {id_err}")
+
+        if identified_count > 0:
+            log(f"Identified {identified_count}/{speaker_count} speakers by voice")
+        # ---
 
         # Parse SRT and assign speakers
         srt_entries = parse_srt(args.srt_file)

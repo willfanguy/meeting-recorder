@@ -10,5 +10,11 @@ scripts/.venv/
 # Logs
 *.log
 
+# Speaker embedding library (biometric data — never commit)
+speaker-embeddings.json
+
+# Python bytecode
+scripts/__pycache__/
+
 # Temporary files
 /tmp/

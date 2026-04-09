@@ -730,6 +730,12 @@ if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
         DIARIZE_ARGS+=(--num-speakers "$ATTENDEE_COUNT")
     fi
 
+    # Speaker identification via embedding library
+    SPEAKER_LIBRARY="${SPEAKER_LIBRARY:-$HOME/.config/meeting-recorder/speaker-embeddings.json}"
+    if [ -f "$SPEAKER_LIBRARY" ]; then
+        DIARIZE_ARGS+=(--speaker-library "$SPEAKER_LIBRARY")
+    fi
+
     # Run with 10-minute timeout (perl alarm — macOS has no timeout command)
     if perl -e 'alarm 600; exec @ARGV' -- "$DIARIZE_VENV" "${DIARIZE_ARGS[@]}" >> /tmp/meeting-recorder.log 2>&1; then
         echo "Speaker diarization complete" >> /tmp/meeting-recorder.log
