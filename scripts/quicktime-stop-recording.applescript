@@ -8,31 +8,31 @@ property dailyNotesFolder : "/Users/will/Vaults/HigherJump/4. Resources/Daily No
 
 on run
     try
-        -- Check if ffmpeg is recording
+        -- Check if recorder is active (works for both Swift CLI and ffmpeg)
         set pidFile to "/tmp/meeting-recorder.pid"
         set tempAudioFile to "/tmp/meeting-recording-temp.m4a"
-        set ffmpegPid to ""
+        set recorderPid to ""
         try
-            set ffmpegPid to do shell script "cat " & quoted form of pidFile & " 2>/dev/null || echo ''"
+            set recorderPid to do shell script "cat " & quoted form of pidFile & " 2>/dev/null || echo ''"
         end try
-        if ffmpegPid is "" then
+        if recorderPid is "" then
             display notification "No active recording" with title "Meeting Recorder"
             return "No active recording"
         end if
 
-        -- Stop ffmpeg gracefully (SIGINT flushes and closes the m4a container)
+        -- Stop recorder gracefully (SIGINT flushes and closes the m4a container)
         try
-            do shell script "kill -INT " & ffmpegPid & " 2>/dev/null || true"
-            -- Wait for ffmpeg to finish writing (up to 5 seconds)
+            do shell script "kill -INT " & recorderPid & " 2>/dev/null || true"
+            -- Wait for process to finish writing (up to 5 seconds)
             repeat with i from 1 to 10
-                set isRunning to do shell script "kill -0 " & ffmpegPid & " 2>/dev/null && echo yes || echo no"
+                set isRunning to do shell script "kill -0 " & recorderPid & " 2>/dev/null && echo yes || echo no"
                 if isRunning is "no" then exit repeat
                 delay 0.5
             end repeat
             -- Force kill if still running
-            set isStillRunning to do shell script "kill -0 " & ffmpegPid & " 2>/dev/null && echo yes || echo no"
+            set isStillRunning to do shell script "kill -0 " & recorderPid & " 2>/dev/null && echo yes || echo no"
             if isStillRunning is "yes" then
-                do shell script "kill -9 " & ffmpegPid & " 2>/dev/null || true"
+                do shell script "kill -9 " & recorderPid & " 2>/dev/null || true"
                 delay 1
             end if
         end try
