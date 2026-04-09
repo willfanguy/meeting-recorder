@@ -1,31 +1,54 @@
 #!/usr/bin/osascript
 
--- QuickTime Audio Recording - Stop
--- Stops recording, saves with proper meeting name, triggers transcription
+-- Meeting Audio Recording - Stop (ffmpeg)
+-- Stops ffmpeg recording, names file from metadata, triggers transcription
 
 property recordingsFolder : "/Users/will/Meeting Transcriptions/"
-property tempFolder : "/Users/will/Movies/"  -- QuickTime has sandbox access here
 property dailyNotesFolder : "/Users/will/Vaults/HigherJump/4. Resources/Daily Notes/"
 
 on run
     try
-        tell application "QuickTime Player"
-            -- Check if there's any document open
-            if (count of documents) is 0 then
-                display notification "No active recording" with title "Meeting Recorder"
-                return "No active recording"
-            end if
+        -- Check if ffmpeg is recording
+        set pidFile to "/tmp/meeting-recorder.pid"
+        set tempAudioFile to "/tmp/meeting-recording-temp.m4a"
+        set ffmpegPid to ""
+        try
+            set ffmpegPid to do shell script "cat " & quoted form of pidFile & " 2>/dev/null || echo ''"
+        end try
+        if ffmpegPid is "" then
+            display notification "No active recording" with title "Meeting Recorder"
+            return "No active recording"
+        end if
 
-            -- Get first document (the recording)
-            set theDoc to document 1
-            set docName to name of theDoc
-
-            -- If it's "Audio Recording", stop it first
-            if docName is "Audio Recording" then
-                stop theDoc
+        -- Stop ffmpeg gracefully (SIGINT flushes and closes the m4a container)
+        try
+            do shell script "kill -INT " & ffmpegPid & " 2>/dev/null || true"
+            -- Wait for ffmpeg to finish writing (up to 5 seconds)
+            repeat with i from 1 to 10
+                set isRunning to do shell script "kill -0 " & ffmpegPid & " 2>/dev/null && echo yes || echo no"
+                if isRunning is "no" then exit repeat
                 delay 0.5
+            end repeat
+            -- Force kill if still running
+            set isStillRunning to do shell script "kill -0 " & ffmpegPid & " 2>/dev/null && echo yes || echo no"
+            if isStillRunning is "yes" then
+                do shell script "kill -9 " & ffmpegPid & " 2>/dev/null || true"
+                delay 1
             end if
-        end tell
+        end try
+        do shell script "rm -f " & quoted form of pidFile
+
+        -- Verify recording file exists and has content
+        set fileCheck to do shell script "[ -f " & quoted form of tempAudioFile & " ] && echo yes || echo no"
+        if fileCheck is "no" then
+            display notification "Recording file not found" with title "Meeting Recorder Error"
+            do shell script "echo 'Error: temp recording file not found at " & tempAudioFile & "' >> /tmp/meeting-recorder.log"
+            return "Error: recording file not found"
+        end if
+        set fileSize to do shell script "stat -f%z " & quoted form of tempAudioFile & " 2>/dev/null || echo 0"
+        if (fileSize as integer) < 10000 then
+            do shell script "echo 'WARNING: Recording file very small (" & fileSize & " bytes) -- may have captured silence' >> /tmp/meeting-recorder.log"
+        end if
 
         -- Get current date/time info
         set currentDate to do shell script "date '+%Y-%m-%d'"
@@ -50,7 +73,7 @@ on run
         set hasMetadata to false
         set metadataSource to ""
         try
-            -- Prefer the snapshot (frozen when recording started — trustworthy)
+            -- Prefer the snapshot (frozen when recording started -- trustworthy)
             set snapshotCheck to do shell script "[ -f " & quoted form of activeSession & " ] && echo yes || echo no"
             if snapshotCheck is "yes" then
                 set sessionFile to activeSession
@@ -65,7 +88,7 @@ on run
                 set metadataSource to sessionFile
                 do shell script "echo 'Using snapshot metadata: " & meetingName & " at " & metaTime & "' >> /tmp/meeting-recorder.log"
             else
-                -- No snapshot — fall back to live metadata with hour validation
+                -- No snapshot -- fall back to live metadata with hour validation
                 -- (live file may have been overwritten by a later meeting)
                 set liveCheck to do shell script "[ -f " & quoted form of metadataFile & " ] && echo yes || echo no"
                 if liveCheck is "yes" then
@@ -111,25 +134,8 @@ on run
             set eventTime to currentHour
         end if
         set fileName to currentDate & " " & eventTime & " - " & my sanitizeFilename(meetingName)
-        set tempPath to tempFolder & fileName & ".m4a"
+        set tempPath to tempAudioFile
         set finalPath to recordingsFolder & fileName & ".m4a"
-
-        -- Export to Movies folder (QuickTime has sandbox access)
-        -- Note: Long recordings (30+ min) can take 2-3 minutes to export
-        tell application "QuickTime Player"
-            set theDoc to document 1
-            try
-                with timeout of 300 seconds
-                    export theDoc in tempPath using settings preset "Audio Only"
-                end timeout
-            on error exportErr
-                -- If export fails, force close to prevent stuck modal
-                close theDoc saving no
-                error "Export failed: " & exportErr
-            end try
-            delay 1
-            close theDoc saving no
-        end tell
 
         -- Move to final destination (with overwrite protection)
         set existingCheck to do shell script "[ -f " & quoted form of finalPath & " ] && echo yes || echo no"
@@ -148,7 +154,7 @@ on run
                 set suffixNum to suffixNum + 1
             end repeat
             do shell script "echo 'WARNING: file already existed, saved as " & fileName & "' >> /tmp/meeting-recorder.log"
-            display notification "⚠️ Name conflict — saved as " & fileName with title "Meeting Recorder"
+            display notification "Warning: Name conflict -- saved as " & fileName with title "Meeting Recorder"
         end if
         do shell script "mv " & quoted form of tempPath & " " & quoted form of finalPath
 
@@ -211,7 +217,7 @@ on getMeetingForTime(dateStr, timeStr)
         -- check the next hour's :00 meeting (handles joining a minute early)
         if matchLine is "" then
             set targetMinute to text 3 thru 4 of timeStr
-            if targetMinute ≥ "55" then
+            if targetMinute >= "55" then
                 set nextHour to do shell script "printf '%02d' $(( " & targetHour & " + 1 ))"
                 set nextHourPattern to "Meeting Notes/" & dateStr & " " & nextHour & "00"
                 set matchLine to do shell script "grep -o '\\[\\[.*" & nextHourPattern & ".*|[^]]*\\]\\]' " & quoted form of dailyNote & " 2>/dev/null | head -1"

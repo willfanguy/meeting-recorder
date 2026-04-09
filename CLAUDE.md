@@ -1,10 +1,50 @@
-# Meeting Recorder - Claude Code Context
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
 This project records and transcribes meetings, integrating with the Obsidian productivity system via morning-plan-processor and meeting-intelligence-processor agents.
 
-**Current approach:** QuickTime audio recording via AppleScript (more reliable than ffmpeg/BlackHole).
+**Current approach:** ffmpeg recording from "Meeting Recording Input" aggregate device, controlled via AppleScript entry points. Replaced QuickTime UI automation on 2026-04-09 after a popup menu timing failure. Next step: Swift CLI using Core Audio Taps (see Task Note: "Swift Meeting Recorder CLI").
+
+## Common Commands
+
+```bash
+# Start a recording (via Terminal — usually triggered by MeetingBar/Raycast)
+osascript scripts/quicktime-start-recording.applescript
+
+# Stop recording and trigger transcription pipeline
+osascript scripts/quicktime-stop-recording.applescript
+
+# Run transcription manually on an existing audio file
+scripts/transcribe-and-process.sh "/path/to/recording.m4a"
+
+# Set up diarization venv (one-time)
+scripts/setup-diarization.sh
+
+# Run diarization manually on existing audio+transcript
+scripts/.venv/bin/python scripts/diarize-transcript.py /path/to/audio.wav /path/to/transcript.txt /path/to/transcript.srt
+
+# Check recording status
+cat /tmp/meeting-recorder.pid 2>/dev/null && echo "Recording active" || echo "No active recording"
+
+# View logs
+tail -f /tmp/meeting-recorder.log
+
+# Verify audio device exists
+ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -i meeting
+
+# Check audio file has content (not silence)
+ffmpeg -i file.m4a -af volumedetect -f null -
+```
+
+## Configuration
+
+- **`config.sh`** — Local config (gitignored). Currently sourced by the diarization pipeline for `HF_TOKEN`. Other scripts have paths hardcoded inline (see `config.example.sh` for reference).
+- **`config.example.sh`** — Reference for all configurable values, checked into git.
+- Whisper models live at `~/.local/share/whisper-models/`
+- All runtime state files go in `/tmp/meeting-recorder-*.{pid,json,txt}`
 
 ## File Naming Convention
 
@@ -26,14 +66,15 @@ Examples:
    ```
 
 2. **Meeting start:** User triggers `quicktime-start-recording.applescript` (via Raycast or MeetingBar):
-   - Opens QuickTime Player
-   - Starts new audio recording
-   - Minimizes window
+   - Starts ffmpeg recording from "Meeting Recording Input" aggregate device
+   - Saves PID for stop script
+   - Snapshots MeetingBar metadata (meeting name, event time)
+   - No UI automation — fully headless
 
 3. **Meeting end:** User triggers `quicktime-stop-recording.applescript`:
-   - Stops QuickTime recording
-   - Reads daily note to find meeting name for current hour
-   - Saves as `YYYY-MM-DD HHmm - Meeting Name.m4a`
+   - Kills ffmpeg (SIGINT for graceful shutdown)
+   - Resolves meeting name from metadata/daily note
+   - Moves temp file to `~/Meeting Transcriptions/YYYY-MM-DD HHmm - Meeting Name.m4a`
    - Triggers `transcribe-and-process.sh` in background
 
 4. **Post-processing:** `transcribe-and-process.sh`:
@@ -104,10 +145,28 @@ The `transcribe-and-process.sh` script automatically searches this directory for
 
 The meeting-intelligence-processor also knows to check for Zoom chat — both in the meeting note (primary) and by searching the Zoom directory directly (fallback for notes not created by the recorder pipeline).
 
+## total-recall Sync
+
+After creating a meeting note, `transcribe-and-process.sh` automatically syncs it to the Unraid `total-recall` share via the Mac mini.
+
+**Flow:**
+1. Meeting intelligence processor runs and writes AI summary to the note
+2. Work machine rsyncs the enriched note to Mac mini vault (bypasses Obsidian Sync delay)
+3. Mac mini runs `~/Repos/total-recall/sync/sync-meeting-note.sh` to push to Unraid
+
+The sync happens inside the meeting-intelligence background block after `SUCCESS=true` — Unraid always gets the fully enriched note, not the bare transcript.
+
+**Why via Mac mini:** The work machine can't reach Unraid directly. The Mac mini has the SSH tunnel (`com.totalrecall.bee-tunnel.plist`).
+
+**Remote path escaping:** The rsync destination uses `wills-mac-mini:Vaults/HigherJump/4.\ Resources/Meeting\ Notes/` — spaces must be escaped or rsync throws "server receiver mode requires two argument".
+
+**Logs:** All sync output goes to `/tmp/meeting-recorder.log` under `[total-recall]` prefix.
+
 ## Related Components
 
 - **morning-plan-processor** (`~/.claude/agents/morning-plan-processor.md`): Creates daily note with meeting links
 - **meeting-intelligence-processor** (`~/.claude/agents/meeting-intelligence-processor.md`): Adds AI summary to meeting notes
+- **total-recall sync** (`~/Repos/total-recall/sync/sync-meeting-note.sh` on Mac mini): Pushes notes to Unraid
 - **Productivity config** (`~/Repos/personal/productivity/config/config.json`): Central config including `meetings` section
 - **Meeting naming spec** (`~/Repos/personal/productivity/config/meeting-naming-spec.md`): Full specification
 
@@ -115,17 +174,18 @@ The meeting-intelligence-processor also knows to check for Zoom chat — both in
 
 ### quicktime-start-recording.applescript
 
-- Opens QuickTime Player
-- Creates new audio recording
-- Starts recording
-- Minimizes window to reduce distraction
+- Starts ffmpeg recording from "Meeting Recording Input" aggregate device to `/tmp/meeting-recording-temp.m4a`
+- Saves ffmpeg PID to `/tmp/meeting-recorder.pid`
+- Snapshots MeetingBar metadata for meeting name resolution
+- Starts live transcript via Terminal.app (yap)
 - Can be triggered from Raycast or MeetingBar
+- **Note:** Filename retained for MeetingBar compatibility despite no longer using QuickTime
 
 ### quicktime-stop-recording.applescript
 
-- Stops QuickTime recording
-- Reads daily note to find meeting name for current hour
-- Exports as m4a with proper filename
+- Kills ffmpeg gracefully (SIGINT) and waits for file finalization
+- Resolves meeting name from metadata snapshot, live metadata, or daily note (in priority order)
+- Moves recording to `~/Meeting Transcriptions/` with proper filename
 - Triggers transcribe-and-process.sh in background
 
 ### transcribe-and-process.sh
@@ -149,9 +209,52 @@ after Whisper (or any future transcription engine) finishes.
 
 Common corrections include: "glass door" → "Glassdoor", "supermatters" → "SuperMatch", "co-complete" → "code complete", name spelling fixes for team members.
 
+### Live Transcript (yap)
+
+Real-time transcription running alongside the recording for catch-up during meetings.
+
+- **Start**: `scripts/start-live-transcript.sh` — launched automatically by the start-recording AppleScript via Terminal.app (needs Terminal's TCC permissions for microphone)
+- **Stop**: `scripts/stop-live-transcript.sh` — called by the stop-recording AppleScript
+- **Viewer**: `scripts/live-transcript-viewer.py` — Python HTTP server on `localhost:8234` that renders live SRT output in browser
+- **Engine**: `yap` (Apple Speech.framework, installed via Homebrew) in `--srt` mode
+- **PTY trick**: yap is wrapped in `script -q` to give it a PTY — without this, yap block-buffers and text only appears every ~30 seconds
+- **PID files**: `/tmp/meeting-recorder-live-pid.txt` (yap), `/tmp/meeting-recorder-live-viewer-pid.txt` (viewer)
+
+### Speaker Diarization (pyannote-audio)
+
+After domain corrections, the pipeline optionally runs speaker diarization to label who said what.
+
+- **Script**: `scripts/diarize-transcript.py` (runs in `scripts/.venv/` with Python 3.12)
+- **Model**: pyannote/speaker-diarization-3.1 (requires HuggingFace token in config.sh)
+- **Setup**: Run `scripts/setup-diarization.sh` once to create the venv and install dependencies
+- **Fallback**: If venv, token, or model is missing, diarization is silently skipped — unlabeled transcript continues through pipeline
+- **Output**: Rewrites .txt with speaker labels (`**Speaker A:** text`), updates .srt with `[Speaker A]` prefixes, writes `.diarization.json` sidecar
+- **Speaker labels**: Generic (Speaker A/B/C) — the meeting-intelligence-processor can infer real names from conversational context
+- **Performance**: ~3-8 minutes on CPU, faster with MPS GPU acceleration (Apple Silicon)
+- **Hint**: If MeetingBar provides `attendee_count`, it's passed as `--num-speakers` to improve accuracy
+
 ## Archived Scripts
 
-Old ffmpeg/BlackHole approach scripts are in `scripts/archive/`. These were unreliable due to audio device routing issues (often captured silence instead of meeting audio).
+Old ffmpeg/BlackHole shell scripts (pre-QuickTime era) are in `scripts/archive/`. These were abandoned due to audio device routing issues (often captured silence). The current approach returns to ffmpeg but keeps the AppleScript wrapper for MeetingBar integration and metadata handling — the old shell scripts did everything in bash which was less maintainable.
+
+## Recording History
+
+1. **ffmpeg + BlackHole shell scripts** (original) — unreliable, often captured silence
+2. **QuickTime + AppleScript UI automation** — more reliable but fragile System Events popup menu timing
+3. **ffmpeg + AppleScript wrapper** (current, 2026-04-09) — headless ffmpeg, no UI automation
+4. **Swift CLI with Core Audio Taps** (planned) — eliminates BlackHole dependency entirely
+
+## Project Tracking & Roadmap
+
+Obsidian project index: `~/Vaults/HigherJump/2. Projects/Meeting Recorder.md`
+
+Active task notes (query `projects` field for `[[Meeting Recorder]]` in `4. Resources/Work Log/Tasks/`):
+
+- **Swift Meeting Recorder CLI** (open, P3) — Replace ffmpeg+BlackHole with a native Swift CLI using Core Audio Taps (macOS 14.2+). Eliminates virtual audio device dependency entirely. Three-phase plan: system audio only → add mic → integration.
+- **Meeting Transcript Diarization** (in-progress, P3) — Speaker diarization via pyannote-audio. Core implementation done (scripts/diarize-transcript.py), integrated into pipeline. Generic labels (Speaker A/B/C) — name mapping deferred to Speaker Embedding Library.
+- **Speaker Embedding Library** (open, P4) — Map pyannote voice embeddings to real names for automatic speaker identification. Depends on diarization pipeline. Would use cosine similarity against a local JSON library of enrolled embeddings.
+
+Related skills (in `~/.claude/skills/`): `quicktime-applescript-recording`, `ffmpeg-aggregate-device-silent-downmix`, `pyannote-audio-4x-setup`, `blackhole-silent-loopback-failure`, `meeting-transcription-debugging`, `aggregate-device-choppy-audio`, `yap-vs-whisper-transcription`
 
 ## Troubleshooting
 
@@ -171,8 +274,9 @@ This is Whisper hallucinating on silence. Check:
 
 See `meeting-transcription-debugging` skill for detailed diagnostics.
 
-### QuickTime recording issues
+### ffmpeg recording issues
 
-- **No recording starts:** Check QuickTime has microphone permissions in System Settings
-- **Wrong audio source:** Set default input in System Settings > Sound before starting
-- **Recording already active:** Script checks for existing recordings and notifies
+- **No recording starts:** Check ffmpeg log at `/tmp/ffmpeg-recording.log`. Verify "Meeting Recording Input" device exists: `ffmpeg -f avfoundation -list_devices true -i ""`
+- **Captured silence:** Check BlackHole routing. System audio output must go through a Multi-Output Device that includes BlackHole 2ch. Verify in Audio MIDI Setup.
+- **Recording already active:** Script checks PID file at `/tmp/meeting-recorder.pid`
+- **File too small warning:** Stop script warns if recording is <10KB — likely captured silence

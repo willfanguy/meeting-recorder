@@ -38,11 +38,24 @@ fi
 # Clear transcript file
 > "$TRANSCRIPT_FILE"
 
+# Resolve yap path now — `script` spawns a clean bash without our PATH.
+# AppleScript's `do shell script` may also have a minimal PATH, so check
+# the known Homebrew location as a fallback.
+YAP_BIN="$(command -v yap 2>/dev/null || true)"
+if [ -z "$YAP_BIN" ] && [ -x /opt/homebrew/bin/yap ]; then
+    YAP_BIN="/opt/homebrew/bin/yap"
+fi
+if [ -z "$YAP_BIN" ]; then
+    echo "$(date '+%H:%M:%S') [live] ERROR: yap not found in PATH" >> "$LOG"
+    echo "Error: yap not found. Install with: brew install yap" >&2
+    exit 1
+fi
+
 # Use `script` to give yap a PTY — without it, yap block-buffers (~4KB chunks)
 # and text only appears every 30+ seconds. With a PTY, yap flushes per segment.
 # SRT format outputs short segments (2-5s phrases) more frequently than --txt,
 # giving a streaming feel. The viewer parses SRT and renders cleanly.
-script -q -a "$TRANSCRIPT_FILE" bash -c 'exec yap listen --srt 2>>/tmp/yap-listen.error' > /dev/null 2>&1 &
+script -q -a "$TRANSCRIPT_FILE" bash -c "exec $YAP_BIN listen-and-dictate --srt 2>>/tmp/yap-listen.error" > /dev/null 2>&1 &
 YAP_PID=$!
 echo "$YAP_PID" > "$PID_FILE"
 

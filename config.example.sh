@@ -37,3 +37,10 @@ AUDIO_DEVICE="Meeting Recording Input"
 # Run Claude meeting intelligence processor after transcription (true/false)
 # Requires Claude Code CLI to be installed and a meeting-intelligence-processor agent
 RUN_MEETING_INTELLIGENCE="true"
+
+# HuggingFace token for pyannote speaker diarization (free tier, read access)
+# Setup: run scripts/setup-diarization.sh, then add your token here
+# Must accept model licenses at:
+#   https://huggingface.co/pyannote/speaker-diarization-3.1
+#   https://huggingface.co/pyannote/segmentation-3.0
+HF_TOKEN=""

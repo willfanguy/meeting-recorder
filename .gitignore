@@ -4,6 +4,9 @@ config.sh
 # macOS
 .DS_Store
 
+# Python virtual environment (diarization)
+scripts/.venv/
+
 # Logs
 *.log
 

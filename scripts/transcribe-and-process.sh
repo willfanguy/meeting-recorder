@@ -708,6 +708,40 @@ else
     echo "Domain corrections script not found, skipping" >> /tmp/meeting-recorder.log
 fi
 
+# --- Speaker diarization (label who said what) ---
+DIARIZE_SCRIPT="$(dirname "$0")/diarize-transcript.py"
+DIARIZE_VENV="$(dirname "$0")/.venv/bin/python"
+SRT_FOR_DIARIZE="${DIRNAME}/${BASENAME}.srt"
+PROJECT_DIR="$(dirname "$(dirname "$0")")"
+
+if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
+    echo "Running speaker diarization..." >> /tmp/meeting-recorder.log
+    osascript -e 'display notification "Running speaker diarization..." with title "Meeting Recorder"'
+
+    # Load HF token from config.sh
+    if [ -f "$PROJECT_DIR/config.sh" ]; then
+        HF_TOKEN=$(grep '^HF_TOKEN=' "$PROJECT_DIR/config.sh" | cut -d'"' -f2)
+        export HF_TOKEN
+    fi
+
+    # Build diarization arguments
+    DIARIZE_ARGS=("$DIARIZE_SCRIPT" "$WAV_FILE" "$SRT_FOR_DIARIZE" "$TRANSCRIPT_FILE")
+    if [ -n "$ATTENDEE_COUNT" ] && [ "$ATTENDEE_COUNT" -gt 1 ] 2>/dev/null; then
+        DIARIZE_ARGS+=(--num-speakers "$ATTENDEE_COUNT")
+    fi
+
+    # Run with 10-minute timeout (perl alarm — macOS has no timeout command)
+    if perl -e 'alarm 600; exec @ARGV' -- "$DIARIZE_VENV" "${DIARIZE_ARGS[@]}" >> /tmp/meeting-recorder.log 2>&1; then
+        echo "Speaker diarization complete" >> /tmp/meeting-recorder.log
+    else
+        echo "Speaker diarization failed or timed out — continuing with unlabeled transcript" >> /tmp/meeting-recorder.log
+    fi
+else
+    if [ -f "$DIARIZE_SCRIPT" ]; then
+        echo "Diarization venv not found at $DIARIZE_VENV — run scripts/setup-diarization.sh" >> /tmp/meeting-recorder.log
+    fi
+fi
+
 # Extract date and time from filename (format: YYYY-MM-DD HHMM - Title)
 DATE_PART=$(echo "$BASENAME" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
 TIME_PART=$(echo "$BASENAME" | grep -oE ' [0-9]{4} ' | tr -d ' ')
@@ -802,7 +836,7 @@ rm -f "$METADATA_FILE"
 echo "Meeting note created: $NOTE_FILE" >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Transcription complete!" with title "Meeting Recorder"'
 
-# Run meeting intelligence processor
+# Run meeting intelligence processor, then sync to total-recall once enriched
 echo "Running meeting intelligence..." >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Running AI analysis..." with title "Meeting Recorder"'
 
@@ -833,6 +867,19 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
     if [ "$SUCCESS" = true ]; then
         osascript -e 'display notification "AI analysis complete — run meeting-tasks-extractor to review tasks" with title "Meeting Recorder" sound name "Glass"'
         echo "Meeting intelligence completed successfully (attempt $ATTEMPT)" >> /tmp/meeting-recorder.log
+
+        # Sync enriched note to Mac mini → Unraid (total-recall)
+        # Runs after AI summary is written so Unraid gets the fully enriched note.
+        NOTE_BASENAME=$(basename "$NOTE_FILE")
+        MINI_NOTES_DIR="wills-mac-mini:Vaults/HigherJump/4.\ Resources/Meeting\ Notes/"
+        if rsync -az "$NOTE_FILE" "$MINI_NOTES_DIR" 2>>/tmp/meeting-recorder.log; then
+            echo "[total-recall] rsync to Mac mini OK: $NOTE_BASENAME" >> /tmp/meeting-recorder.log
+            ssh wills-mac-mini "NOTE='$NOTE_BASENAME' bash -c '~/Repos/total-recall/sync/sync-meeting-note.sh \"\$HOME/Vaults/HigherJump/4. Resources/Meeting Notes/\$NOTE\"'" \
+                >> /tmp/meeting-recorder.log 2>&1
+            echo "[total-recall] Unraid sync triggered for: $NOTE_BASENAME" >> /tmp/meeting-recorder.log
+        else
+            echo "[total-recall] rsync to Mac mini FAILED for: $NOTE_BASENAME" >> /tmp/meeting-recorder.log
+        fi
     else
         osascript -e 'display notification "AI analysis failed after 3 attempts - check logs" with title "Meeting Recorder"'
         echo "Meeting intelligence failed after $MAX_RETRIES attempts" >> /tmp/meeting-recorder.log

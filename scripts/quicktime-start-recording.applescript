@@ -1,63 +1,54 @@
 #!/usr/bin/osascript
 
--- QuickTime Audio Recording - Start
+-- Meeting Audio Recording - Start (ffmpeg)
 -- Triggered by MeetingBar or Raycast to start meeting recording
+-- Records from "Meeting Recording Input" aggregate device via ffmpeg (no UI automation)
 
 on run
     try
-        tell application "QuickTime Player"
-            activate
-            delay 0.3
+        set pidFile to "/tmp/meeting-recorder.pid"
+        set tempAudioFile to "/tmp/meeting-recording-temp.m4a"
 
-            -- Check if there's already an "Audio Recording" document (means we're recording)
-            set docNames to name of every document
-            if docNames contains "Audio Recording" then
-                display notification "Already recording!" with title "Meeting Recorder"
-                return "Already recording"
+        -- Check if already recording
+        try
+            set existingPid to do shell script "cat " & quoted form of pidFile & " 2>/dev/null || echo ''"
+            if existingPid is not "" then
+                set isRunning to do shell script "kill -0 " & existingPid & " 2>/dev/null && echo yes || echo no"
+                if isRunning is "yes" then
+                    display notification "Already recording!" with title "Meeting Recorder"
+                    return "Already recording"
+                end if
             end if
+        end try
 
-            -- Start new audio recording
-            new audio recording
-            delay 0.5
+        -- Remove stale temp file and PID
+        do shell script "rm -f " & quoted form of tempAudioFile & " " & quoted form of pidFile
 
-            -- Set audio source to Meeting Recording Input via UI automation
-            -- (QuickTime's AppleScript "set current microphone" command is broken on modern macOS)
-            set theDoc to document "Audio Recording"
-            delay 0.3
-        end tell
+        -- Start ffmpeg recording from aggregate audio device
+        -- Uses device name (not index) for robustness across device reconnections
+        -- -nostdin: headless operation (no interactive prompts)
+        -- Explicit pan filter to mix all 4 channels to mono (do NOT use -ac 1:
+        -- ffmpeg interprets 4ch as surround and drops the mic channels in downmix)
+        -- aresample=async=1: handles clock drift between aggregate device sub-devices
+        -- alimiter: prevents clipping when summing channels
+        do shell script "/opt/homebrew/bin/ffmpeg -nostdin -y -f avfoundation -i ':Meeting Recording Input' -af 'pan=1c|c0=c0+c1+c2+c3,aresample=async=1,alimiter=limit=0.9' -c:a aac -b:a 128k " & quoted form of tempAudioFile & " > /tmp/ffmpeg-recording.log 2>&1 & echo $! > " & quoted form of pidFile
+        delay 1
 
-        tell application "System Events"
-            tell process "QuickTime Player"
-                tell window 1
-                    set deviceButton to first button whose description is "show capture device selection pop up"
-                    click deviceButton
-                    delay 0.5
-                    click menu item "Meeting Recording Input" of menu 1 of deviceButton
-                    delay 0.3
-                end tell
-            end tell
-        end tell
-
-        tell application "QuickTime Player"
-            -- Start the recording
-            set theDoc to document "Audio Recording"
-            start theDoc
-            delay 0.3
-
-            -- Minimize the window
-            tell application "System Events"
-                tell process "QuickTime Player"
-                    try
-                        click button 3 of window 1
-                    end try
-                end tell
-            end tell
-        end tell
+        -- Verify ffmpeg started successfully
+        set ffmpegPid to do shell script "cat " & quoted form of pidFile & " 2>/dev/null || echo ''"
+        if ffmpegPid is "" then
+            error "ffmpeg PID file empty -- process failed to start"
+        end if
+        set isRunning to do shell script "kill -0 " & ffmpegPid & " 2>/dev/null && echo yes || echo no"
+        if isRunning is "no" then
+            set ffmpegError to do shell script "tail -5 /tmp/ffmpeg-recording.log 2>/dev/null || echo 'no log'"
+            error "ffmpeg failed to start: " & ffmpegError
+        end if
 
         -- Log start time and save state for stop script
         set startTime to do shell script "date '+%Y-%m-%d %H:%M:%S'"
         set startHHMM to do shell script "date '+%H%M'"
-        do shell script "echo 'Recording started: " & startTime & "' >> /tmp/meeting-recorder.log"
+        do shell script "echo 'Recording started (ffmpeg PID " & ffmpegPid & "): " & startTime & "' >> /tmp/meeting-recorder.log"
 
         -- Snapshot MeetingBar metadata for this recording session
         -- The live metadata file gets overwritten when the next meeting starts,
@@ -81,7 +72,8 @@ on run
 
         do shell script "echo " & startHHMM & " > /tmp/meeting-recorder-start-time.txt"
 
-        -- Start live transcript (yap listen → browser viewer) in background
+        -- Start live transcript via Terminal.app so yap inherits its TCC permissions
+        -- (MeetingBar's do shell script context lacks Microphone + Screen Recording)
         try
             set meetingLabel to "Meeting"
             try
@@ -90,7 +82,9 @@ on run
                     set meetingLabel to do shell script "python3 -c \"import json; print(json.load(open('" & activeSession & "'))['title'])\""
                 end if
             end try
-            do shell script "/Users/will/Repos/personal/meeting-recorder/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1 &"
+            tell application "Terminal"
+                do script "/Users/will/Repos/personal/meeting-recorder/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
+            end tell
         on error liveErr
             do shell script "echo 'Live transcript start error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
         end try
@@ -99,6 +93,10 @@ on run
         return "Recording started at " & startTime
 
     on error errMsg
+        -- Clean up on failure
+        try
+            do shell script "rm -f " & quoted form of pidFile
+        end try
         display notification "Failed: " & errMsg with title "Meeting Recorder Error"
         do shell script "echo 'Error: " & errMsg & "' >> /tmp/meeting-recorder.log"
         return "Error: " & errMsg
