@@ -16,5 +16,9 @@ speaker-embeddings.json
 # Python bytecode
 scripts/__pycache__/
 
+# Swift build artifacts
+MeetingRecorder/.build/
+MeetingRecorder/.swiftpm/
+
 # Temporary files
 /tmp/
