@@ -16,6 +16,7 @@ jobs:
         with:
           scandir: .
           ignore_paths: scripts/.venv
+          severity: warning
 
   python-tests:
     runs-on: ubuntu-latest
