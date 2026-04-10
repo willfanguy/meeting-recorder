@@ -173,7 +173,7 @@ on run
 
         -- Stop live transcript
         try
-            do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
+            do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
         on error liveErr
             do shell script "echo 'Live transcript stop error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
         end try
@@ -277,7 +277,7 @@ end sanitizeFilename
 on triggerTranscription(audioPath)
     try
         display notification "Starting transcription..." with title "Meeting Recorder"
-        do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/transcribe-and-process.sh " & quoted form of audioPath & " >> /tmp/meeting-recorder.log 2>&1 &"
+        do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/transcribe-and-process.sh " & quoted form of audioPath & " >> /tmp/meeting-recorder.log 2>&1 &"
     on error errMsg
         do shell script "echo 'Transcription trigger error: " & errMsg & "' >> /tmp/meeting-recorder.log"
     end try

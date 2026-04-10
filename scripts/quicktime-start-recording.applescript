@@ -26,7 +26,7 @@ on run
 
         -- Start recording via Swift CLI (Core Audio Taps — no BlackHole/aggregate device needed)
         -- Falls back to ffmpeg if Swift CLI is not installed
-        set recorderBin to do shell script "command -v meeting-recorder 2>/dev/null || echo ''"
+        set recorderBin to do shell script "PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH command -v meeting-recorder 2>/dev/null || echo ''"
         if recorderBin is "" then
             -- Fallback: ffmpeg with aggregate audio device
             do shell script "/opt/homebrew/bin/ffmpeg -nostdin -y -f avfoundation -i ':Meeting Recording Input' -af 'pan=1c|c0=c0+c1+c2+c3,aresample=async=1,alimiter=limit=0.9' -c:a aac -b:a 128k " & quoted form of tempAudioFile & " > /tmp/ffmpeg-recording.log 2>&1 & echo $! > " & quoted form of pidFile
@@ -85,7 +85,7 @@ on run
                 end if
             end try
             tell application "Terminal"
-                do script "${MEETING_RECORDER_DIR:-$HOME/Repos/meeting-recorder}/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
+                do script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
             end tell
         on error liveErr
             do shell script "echo 'Live transcript start error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
