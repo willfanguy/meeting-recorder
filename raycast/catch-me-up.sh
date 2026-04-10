@@ -8,60 +8,48 @@
 # Optional parameters:
 # @raycast.icon 🧠
 # @raycast.packageName Meeting Recorder
-# @raycast.description Summarize the last few minutes of the live meeting transcript
+# @raycast.description Quick recap of the last 3 minutes of the live meeting
 
 TRANSCRIPT="/tmp/live-transcript.txt"
-MINUTES=${1:-5}
-
-if [ ! -f "$TRANSCRIPT" ]; then
-    echo "No active meeting transcript."
-    echo ""
-    echo "Start a meeting recording first — the live transcript appears at $TRANSCRIPT"
-    exit 0
-fi
-
-# Check file has content
-if [ ! -s "$TRANSCRIPT" ]; then
-    echo "Transcript file is empty — meeting may have just started."
-    exit 0
-fi
-
-# Extract text from SRT format (strip timestamps and sequence numbers, keep speaker labels)
-# Then take roughly the last N minutes worth (~150 words/min of speech)
+MINUTES=3
 WORDS_PER_MIN=150
 WORD_COUNT=$((MINUTES * WORDS_PER_MIN))
 
-TEXT=$(sed -n '/^[^0-9]/p' "$TRANSCRIPT" \
+if [ ! -f "$TRANSCRIPT" ] || [ ! -s "$TRANSCRIPT" ]; then
+    echo "No active meeting transcript."
+    exit 0
+fi
+
+# Extract text from SRT, apply domain corrections, get last 3 minutes
+RECENT=$(sed -n '/^[^0-9]/p' "$TRANSCRIPT" \
     | grep -v '\-\->' \
     | grep -v '^\s*$' \
     | sed 's/\[Speaker \([A-Z]\)\] /Speaker \1: /g' \
     | tr '\n' ' ' \
-    | sed 's/  */ /g')
+    | sed 's/  */ /g' \
+    | sed -e 's/glass door/Glassdoor/gi' \
+          -e 's/super match/SuperMatch/gi' -e 's/superman/SuperMatch/gi' -e 's/supermatters/SuperMatch/gi' \
+          -e 's/super fit/SuperFit/gi' \
+          -e 's/project door/Project Door/gi' \
+          -e 's/jobs for you/JobsForYou/gi' \
+          -e 's/barker barker/blocker/gi' \
+          -e 's/Gleen/Glean/gi' -e 's/Baya/beta/gi' \
+          -e 's/co-complete/code complete/gi' \
+          -e 's/but backs/bug bashes/gi' -e 's/evalves/evals/gi' \
+          -e 's/Karen Hoff/Kaarin Hoff/gi' -e 's/Corinne Hoff/Kaarin Hoff/gi' \
+          -e 's/Erin Breyer/Eric Breier/gi' -e 's/Erin Briar/Eric Breier/gi' \
+          -e 's/Julie Wilding/Judith Wilding/gi' -e 's/Aaron Delevic/Aron Delevic/gi' \
+    | awk -v n="$WORD_COUNT" '{
+        split($0, words, " ")
+        total = length(words)
+        start = total - n
+        if (start < 1) start = 1
+        for (i = start; i <= total; i++) printf "%s ", words[i]
+    }')
 
-# Get the last N words
-RECENT=$(echo "$TEXT" | awk -v n="$WORD_COUNT" '{
-    split($0, words, " ")
-    total = length(words)
-    start = total - n
-    if (start < 1) start = 1
-    result = ""
-    for (i = start; i <= total; i++) {
-        result = result " " words[i]
-    }
-    print result
-}')
-
-if [ -z "$RECENT" ] || [ ${#RECENT} -lt 20 ]; then
-    echo "Not enough transcript content yet. Keep talking!"
+if [ ${#RECENT} -lt 20 ]; then
+    echo "Not enough transcript yet."
     exit 0
 fi
 
-# Summarize via Apple Foundation Models
-echo "$RECENT" | /opt/homebrew/bin/afm -i "You are a meeting assistant. Based on this recent meeting transcript excerpt, provide:
-
-1. **Current topic**: What's being discussed right now (1 sentence)
-2. **Key points** (3-5 bullets): The most important things said
-3. **Decisions made**: Any decisions or agreements (or 'None yet')
-4. **Action items mentioned**: Any tasks assigned (or 'None yet')
-
-Be concise. Use the speakers' actual words where helpful."
+echo "$RECENT" | /opt/homebrew/bin/afm -i "Quick meeting recap. In 2-4 sentences, tell me what's being discussed right now and anything important I missed. Be direct and casual — I'm catching up mid-meeting."
