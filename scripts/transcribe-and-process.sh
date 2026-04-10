@@ -727,7 +727,14 @@ if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
     # Build diarization arguments
     DIARIZE_ARGS=("$DIARIZE_SCRIPT" "$WAV_FILE" "$SRT_FOR_DIARIZE" "$TRANSCRIPT_FILE")
     if [ -n "$ATTENDEE_COUNT" ] && [ "$ATTENDEE_COUNT" -gt 1 ] 2>/dev/null; then
-        DIARIZE_ARGS+=(--num-speakers "$ATTENDEE_COUNT")
+        # Cap at 12 — large org meetings invite 50+ but rarely have >12 active speakers.
+        # Uncapped attendee counts cause pyannote to over-segment.
+        SPEAKER_HINT="$ATTENDEE_COUNT"
+        if [ "$SPEAKER_HINT" -gt 12 ] 2>/dev/null; then
+            echo "Capping speaker hint from $SPEAKER_HINT to 12 (large meeting)" >> /tmp/meeting-recorder.log
+            SPEAKER_HINT=12
+        fi
+        DIARIZE_ARGS+=(--num-speakers "$SPEAKER_HINT")
     fi
 
     # Speaker identification via embedding library
