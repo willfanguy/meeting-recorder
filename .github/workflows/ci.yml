@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: .
+          ignore_paths: scripts/.venv
+
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install numpy
+      - name: Run tests
+        working-directory: scripts
+        run: |
+          python test_diarize.py
+          python test_speaker_library.py
+          python test_identification_integration.py
+
+  swift-build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build MeetingRecorder
+        working-directory: MeetingRecorder
+        run: swift build
