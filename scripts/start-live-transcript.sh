@@ -66,7 +66,7 @@ echo "$VIEWER_PID" > "$VIEWER_PID_FILE"
 
 # Give the server a moment to start, then open browser
 sleep 0.5
-open "http://localhost:8234"
+open -a "Comet" "http://localhost:8234"
 
 echo "$(date '+%H:%M:%S') [live] Started live transcript: yap (PID: $YAP_PID), viewer (PID: $VIEWER_PID)" >> "$LOG"
 echo "Live transcript: http://localhost:8234"
