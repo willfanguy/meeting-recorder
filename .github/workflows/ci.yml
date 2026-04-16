@@ -26,13 +26,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test dependencies
-        run: pip install numpy
+        run: pip install ".[test]"
       - name: Run tests
-        working-directory: scripts
-        run: |
-          python test_diarize.py
-          python test_speaker_library.py
-          python test_identification_integration.py
+        run: pytest scripts/ -v
 
   swift-build:
     runs-on: macos-14

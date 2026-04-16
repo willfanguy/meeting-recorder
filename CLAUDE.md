@@ -51,10 +51,31 @@ scripts/.venv/bin/python scripts/enroll-speakers.py \
   --assign "Speaker A=Will Fanguy" "Speaker B=Judith Wilding"
 
 # Run all tests
-scripts/.venv/bin/python scripts/test_diarize.py && \
-  scripts/.venv/bin/python scripts/test_speaker_library.py && \
-  scripts/.venv/bin/python scripts/test_identification_integration.py
+scripts/.venv/bin/pytest scripts/ -v
 ```
+
+## Testing
+
+- **Run tests**: `scripts/.venv/bin/pytest scripts/ -v`
+- **Install test deps** (local): `uv pip install --python scripts/.venv/bin/python pytest hypothesis`
+- **Install test deps** (CI): `pip install ".[test]"` (uses pyproject.toml)
+- **Frameworks**: pytest + hypothesis (property-based testing)
+- **Test location**: All test files live in `scripts/` alongside the code they test
+- **Policy**: Follows workspace-level Testing Standards. Tests must verify observable runtime behavior, not implementation details. Property-based tests for invariants (idempotency, determinism). Regression tests reproduce exact failure scenarios.
+
+### Test coverage
+
+- `diarize-transcript.py` — SRT parsing, speaker map building, JSON sidecar write/roundtrip
+- `speaker_library.py` — Enroll/identify, conflict resolution, save/load roundtrip, edge cases
+- `apply-domain-corrections.py` — Loading, pattern matching, longest-match-first ordering, idempotency (hypothesis)
+- `enroll-speakers.py` — `_rewrite_speaker_id_section()` markdown rewriting
+
+### Not yet tested
+
+- `format_timestamp()` in diarize-transcript.py
+- Multi-speaker split path in `assign_speakers()` (proportional word distribution)
+- `live-transcript-viewer.py` parse_srt()
+- File I/O paths in `process_file()` and `relabel_files()`
 
 ## Configuration
 

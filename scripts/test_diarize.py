@@ -1,42 +1,26 @@
-#!/usr/bin/env python3
 """Tests for diarize-transcript.py embedding extraction and JSON sidecar."""
 
 import json
 import os
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 
-# Add scripts dir to path so we can import the module
-sys.path.insert(0, os.path.dirname(__file__))
-
-# Import functions under test
-from importlib.util import spec_from_file_location, module_from_spec
-spec = spec_from_file_location("diarize_transcript",
-                                os.path.join(os.path.dirname(__file__), "diarize-transcript.py"))
-diarize_mod = module_from_spec(spec)
-spec.loader.exec_module(diarize_mod)
-
-write_diarization_json = diarize_mod.write_diarization_json
-build_speaker_map = diarize_mod.build_speaker_map
-parse_srt = diarize_mod.parse_srt
-assign_speakers = diarize_mod.assign_speakers
-write_labeled_txt = diarize_mod.write_labeled_txt
-
 
 # --- Helpers to create mock pyannote objects ---
+
 
 class MockSegment:
     def __init__(self, start, end):
         self.start = start
         self.end = end
 
+
 class MockAnnotation:
     """Minimal mock of pyannote.core.Annotation."""
+
     def __init__(self, tracks):
         # tracks: list of (start, end, speaker_label)
         self._tracks = tracks
@@ -66,7 +50,8 @@ class MockDiarizeOutput:
 
 # --- Tests ---
 
-def test_write_diarization_json_with_embeddings():
+
+def test_write_diarization_json_with_embeddings(diarize_mod):
     """Verify embeddings are persisted to the JSON sidecar."""
     tracks = [
         (0.0, 5.0, "SPEAKER_00"),
@@ -74,9 +59,8 @@ def test_write_diarization_json_with_embeddings():
         (10.0, 15.0, "SPEAKER_00"),
     ]
     diarization = MockAnnotation(tracks)
-    speaker_map = build_speaker_map(diarization)
+    speaker_map = diarize_mod.build_speaker_map(diarization)
 
-    # 2 speakers, 256-dim embeddings
     embeddings = np.random.randn(2, 256).astype(np.float32)
     diarize_output = MockDiarizeOutput(
         speaker_diarization=diarization,
@@ -88,7 +72,7 @@ def test_write_diarization_json_with_embeddings():
         wav_path = os.path.join(tmpdir, "test.wav")
         Path(wav_path).touch()
 
-        write_diarization_json(diarization, speaker_map, wav_path, diarize_output)
+        diarize_mod.write_diarization_json(diarization, speaker_map, wav_path, diarize_output)
 
         json_path = os.path.join(tmpdir, "test.diarization.json")
         assert os.path.exists(json_path), f"JSON sidecar not created at {json_path}"
@@ -96,13 +80,11 @@ def test_write_diarization_json_with_embeddings():
         with open(json_path) as f:
             data = json.load(f)
 
-        # Verify structure
         assert data["speaker_count"] == 2
         assert data["embedding_dimension"] == 256
         assert "speaker_embeddings" in data
         assert len(data["speaker_embeddings"]) == 2
 
-        # Verify embedding values match
         for label in ["Speaker A", "Speaker B"]:
             assert label in data["speaker_embeddings"], f"Missing embedding for {label}"
             emb = data["speaker_embeddings"][label]
@@ -116,24 +98,21 @@ def test_write_diarization_json_with_embeddings():
             loaded = np.array(data["speaker_embeddings"][friendly])
             np.testing.assert_array_almost_equal(loaded, embeddings[i], decimal=5)
 
-    print("PASS: test_write_diarization_json_with_embeddings")
 
-
-def test_write_diarization_json_without_embeddings():
+def test_write_diarization_json_without_embeddings(diarize_mod):
     """Verify backward compatibility when diarize_output is None (pyannote 3.x)."""
     tracks = [
         (0.0, 5.0, "SPEAKER_00"),
         (5.0, 10.0, "SPEAKER_01"),
     ]
     diarization = MockAnnotation(tracks)
-    speaker_map = build_speaker_map(diarization)
+    speaker_map = diarize_mod.build_speaker_map(diarization)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         wav_path = os.path.join(tmpdir, "test.wav")
         Path(wav_path).touch()
 
-        # No diarize_output — should produce JSON without embeddings
-        write_diarization_json(diarization, speaker_map, wav_path, diarize_output=None)
+        diarize_mod.write_diarization_json(diarization, speaker_map, wav_path, diarize_output=None)
 
         json_path = os.path.join(tmpdir, "test.diarization.json")
         with open(json_path) as f:
@@ -144,16 +123,13 @@ def test_write_diarization_json_without_embeddings():
         assert "embedding_dimension" not in data
         assert len(data["segments"]) == 2
 
-    print("PASS: test_write_diarization_json_without_embeddings")
 
-
-def test_write_diarization_json_empty_embeddings():
+def test_write_diarization_json_empty_embeddings(diarize_mod):
     """Verify handling of empty embeddings (0 speakers detected early exit)."""
     tracks = [(0.0, 5.0, "SPEAKER_00")]
     diarization = MockAnnotation(tracks)
-    speaker_map = build_speaker_map(diarization)
+    speaker_map = diarize_mod.build_speaker_map(diarization)
 
-    # Shape (0, 256) — no speakers in embeddings (early exit case)
     embeddings = np.zeros((0, 256), dtype=np.float32)
     diarize_output = MockDiarizeOutput(
         speaker_diarization=diarization,
@@ -165,45 +141,39 @@ def test_write_diarization_json_empty_embeddings():
         wav_path = os.path.join(tmpdir, "test.wav")
         Path(wav_path).touch()
 
-        write_diarization_json(diarization, speaker_map, wav_path, diarize_output)
+        diarize_mod.write_diarization_json(diarization, speaker_map, wav_path, diarize_output)
 
         json_path = os.path.join(tmpdir, "test.diarization.json")
         with open(json_path) as f:
             data = json.load(f)
 
-        # Empty embeddings should be omitted
         assert "speaker_embeddings" not in data
 
-    print("PASS: test_write_diarization_json_empty_embeddings")
 
-
-def test_build_speaker_map():
-    """Verify speaker map assigns alphabetical labels."""
+def test_build_speaker_map(diarize_mod):
+    """Verify speaker map assigns alphabetical labels sorted by speaker ID."""
     tracks = [
         (0.0, 5.0, "SPEAKER_02"),
         (5.0, 10.0, "SPEAKER_00"),
         (10.0, 15.0, "SPEAKER_01"),
     ]
     diarization = MockAnnotation(tracks)
-    speaker_map = build_speaker_map(diarization)
+    speaker_map = diarize_mod.build_speaker_map(diarization)
 
-    # Should be sorted by speaker ID
     assert speaker_map["SPEAKER_00"] == "Speaker A"
     assert speaker_map["SPEAKER_01"] == "Speaker B"
     assert speaker_map["SPEAKER_02"] == "Speaker C"
 
-    print("PASS: test_build_speaker_map")
 
-
-def test_parse_srt():
-    """Verify SRT parsing handles standard format."""
+def test_parse_srt(diarize_mod):
+    """Verify SRT parsing handles standard format with multi-line text."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".srt", delete=False) as f:
         f.write("1\n00:00:00,000 --> 00:00:05,500\nHello world\n\n")
         f.write("2\n00:01:30,200 --> 00:01:35,800\nSecond line\nwith continuation\n\n")
         srt_path = f.name
 
     try:
-        entries = parse_srt(srt_path)
+        entries = diarize_mod.parse_srt(srt_path)
         assert len(entries) == 2
         assert entries[0] == (1, 0.0, 5.5, "Hello world")
         assert entries[1][0] == 2
@@ -212,10 +182,8 @@ def test_parse_srt():
     finally:
         os.unlink(srt_path)
 
-    print("PASS: test_parse_srt")
 
-
-def test_assign_speakers_single_dominant():
+def test_assign_speakers_single_dominant(diarize_mod):
     """Verify single-speaker segments get the dominant speaker."""
     tracks = [
         (0.0, 5.0, "SPEAKER_00"),
@@ -227,19 +195,7 @@ def test_assign_speakers_single_dominant():
         (2, 5.5, 9.5, "Hello from speaker one"),
     ]
 
-    labeled = assign_speakers(srt_entries, diarization)
+    labeled = diarize_mod.assign_speakers(srt_entries, diarization)
     assert len(labeled) == 2
     assert labeled[0][2] == "SPEAKER_00"
     assert labeled[1][2] == "SPEAKER_01"
-
-    print("PASS: test_assign_speakers_single_dominant")
-
-
-if __name__ == "__main__":
-    test_build_speaker_map()
-    test_parse_srt()
-    test_assign_speakers_single_dominant()
-    test_write_diarization_json_without_embeddings()
-    test_write_diarization_json_empty_embeddings()
-    test_write_diarization_json_with_embeddings()
-    print("\nAll tests passed.")

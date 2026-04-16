@@ -1,0 +1,16 @@
+[project]
+name = "meeting-recorder"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "Meeting recording and transcription with speaker diarization"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "hypothesis",
+    "numpy",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["scripts"]
+python_files = ["test_*.py"]
