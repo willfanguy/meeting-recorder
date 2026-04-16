@@ -11,6 +11,9 @@ test = [
     "numpy",
 ]
 
+[tool.setuptools]
+py-modules = []
+
 [tool.pytest.ini_options]
 testpaths = ["scripts"]
 python_files = ["test_*.py"]
