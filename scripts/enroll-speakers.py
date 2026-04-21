@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,180 @@ def load_embeddings_from_json(json_path):
         embeddings[label] = np.array(values, dtype=np.float32)
 
     return embeddings
+
+
+MEETING_NOTES_DIR = os.path.expanduser("~/Vaults/HigherJump/4. Resources/Meeting Notes")
+
+
+def _rewrite_speaker_id_section(content, assignments):
+    """Rewrite the Speaker Identification section in a meeting note.
+
+    - Removes table rows for enrolled speakers
+    - Keeps rows for unidentified speakers
+    - Adds an "Enrolled" line summarizing who was identified
+    - Removes the "To enroll" code block
+    - Returns (new_content, changed)
+    """
+    # Find the section — it starts with ### Speaker Identification or ## Speaker Identification
+    section_match = re.search(
+        r"(#{2,3}\s+Speaker Identification[^\n]*\n)",
+        content,
+    )
+    if not section_match:
+        return content, False
+
+    section_start = section_match.start()
+    header = section_match.group(1)
+
+    # Find where the section ends (next heading of same or higher level, or end of file)
+    heading_level = header.count("#", 0, header.index(" "))
+    next_heading = re.search(
+        rf"^#{{{1},{heading_level}}}\s",
+        content[section_match.end():],
+        re.MULTILINE,
+    )
+    section_end = section_match.end() + next_heading.start() if next_heading else len(content)
+    section_body = content[section_match.end():section_end]
+
+    # Parse table rows (| Speaker X | ... |)
+    table_rows = re.findall(r"^\|[^|].*\|$", section_body, re.MULTILINE)
+    # Separate header/separator rows from data rows
+    data_rows = []
+    for row in table_rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        if not cells:
+            continue
+        # Skip header and separator rows
+        if cells[0] in ("Label", "") or cells[0].startswith("-"):
+            continue
+        data_rows.append(row)
+
+    # Split into enrolled vs remaining
+    enrolled_labels = set(assignments.keys())
+    remaining_rows = []
+    for row in data_rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        if cells and cells[0] not in enrolled_labels:
+            remaining_rows.append(row)
+
+    # Build enrolled summary
+    enrolled_summary = ", ".join(
+        f"{name} ({label})" for label, name in assignments.items()
+    )
+
+    # Build new section
+    lines = [header, f"**Enrolled:** {enrolled_summary}\n"]
+
+    if remaining_rows:
+        lines.append("")
+        lines.append("**Remaining unidentified speakers:**\n")
+        lines.append("| Label | Likely Identity | Confidence | Context |")
+        lines.append("|-------|----------------|------------|---------|")
+        lines.extend(remaining_rows)
+        lines.append("")
+    else:
+        lines.append("")
+
+    new_section = "\n".join(lines)
+    new_content = content[:section_start] + new_section + content[section_end:]
+    return new_content, True
+
+
+def relabel_files(diarization_json_path, assignments):
+    """Replace generic speaker labels with real names in transcript files and meeting note.
+
+    assignments: dict of {"Speaker A": "Will Fanguy", ...}
+    """
+    base = Path(diarization_json_path)
+    meeting_stem = base.name.replace(".diarization.json", "")
+    parent = base.parent
+
+    # Files to relabel
+    txt_path = parent / f"{meeting_stem}.txt"
+    srt_path = parent / f"{meeting_stem}.srt"
+    note_path = Path(MEETING_NOTES_DIR) / f"{meeting_stem}.md"
+
+    relabeled = []
+
+    # Relabel .txt: **Speaker A:** -> **Will Fanguy:**
+    if txt_path.is_file():
+        content = txt_path.read_text()
+        changed = False
+        for label, name in assignments.items():
+            old = f"**{label}:**"
+            new = f"**{name}:**"
+            if old in content:
+                content = content.replace(old, new)
+                changed = True
+        if changed:
+            txt_path.write_text(content)
+            relabeled.append(str(txt_path))
+
+    # Relabel meeting note: transcript body + Speaker Identification section
+    if note_path.is_file():
+        content = note_path.read_text()
+        changed = False
+
+        # Transcript body: **Speaker A:** -> **Will Fanguy:**
+        for label, name in assignments.items():
+            old = f"**{label}:**"
+            new = f"**{name}:**"
+            if old in content:
+                content = content.replace(old, new)
+                changed = True
+
+        # Rewrite Speaker Identification section
+        content, section_changed = _rewrite_speaker_id_section(content, assignments)
+        changed = changed or section_changed
+
+        if changed:
+            note_path.write_text(content)
+            relabeled.append(str(note_path))
+
+    # Relabel .srt: [Speaker A] -> [Will Fanguy]
+    if srt_path.is_file():
+        content = srt_path.read_text()
+        changed = False
+        for label, name in assignments.items():
+            old = f"[{label}]"
+            new = f"[{name}]"
+            if old in content:
+                content = content.replace(old, new)
+                changed = True
+        if changed:
+            srt_path.write_text(content)
+            relabeled.append(str(srt_path))
+
+    # Update diarization JSON: speaker labels in speakers, segments, speaker_embeddings
+    with open(diarization_json_path) as f:
+        data = json.load(f)
+
+    json_changed = False
+
+    if "speakers" in data:
+        for label, name in assignments.items():
+            if label in data["speakers"]:
+                data["speakers"][name] = data["speakers"].pop(label)
+                json_changed = True
+
+    if "segments" in data:
+        for seg in data["segments"]:
+            if seg.get("speaker_label") in assignments:
+                seg["speaker_label"] = assignments[seg["speaker_label"]]
+                json_changed = True
+
+    if "speaker_embeddings" in data:
+        for label, name in assignments.items():
+            if label in data["speaker_embeddings"]:
+                data["speaker_embeddings"][name] = data["speaker_embeddings"].pop(label)
+                json_changed = True
+
+    if json_changed:
+        with open(diarization_json_path, "w") as f:
+            json.dump(data, f, indent=2)
+        relabeled.append(str(diarization_json_path))
+
+    return relabeled
 
 
 def cmd_assign(args):
@@ -91,6 +266,17 @@ def cmd_assign(args):
 
     lib.save()
     print(f"\nLibrary saved: {args.library} ({len(lib)} speakers)")
+
+    # Relabel source files unless --no-relabel
+    if not args.no_relabel:
+        relabeled = relabel_files(args.diarization_json, assignments)
+        if relabeled:
+            print(f"\nRelabeled {len(relabeled)} files:")
+            for path in relabeled:
+                print(f"  {path}")
+        else:
+            print("\nNo files needed relabeling.")
+
     return 0
 
 
@@ -230,6 +416,10 @@ def main():
     parser.add_argument(
         "--interactive", action="store_true",
         help="Interactive enrollment mode (use with --scan)"
+    )
+    parser.add_argument(
+        "--no-relabel", action="store_true",
+        help="Skip relabeling source transcript/note files after enrollment"
     )
 
     args = parser.parse_args()
