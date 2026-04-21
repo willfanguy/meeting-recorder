@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Tiny HTTP server that serves the live transcript with auto-refresh and auto-scroll.
+"""Persistent HTTP server that serves live meeting transcripts with auto-refresh.
 
 Reads raw SRT output from yap (via `script` PTY), strips control characters,
 and renders as timestamped lines in a dark-themed browser page.
+
+Meeting boundaries are marked by lines in the transcript file:
+  --- MEETING START: Title @ 2026-04-16 13:00 ---
+  --- MEETING END ---
+
+Only content after the last MEETING START marker is shown. Between meetings
+(no marker, or last marker is END), an idle message is displayed.
 """
 
 import html
@@ -14,11 +21,14 @@ import sys
 TRANSCRIPT_FILE = sys.argv[1] if len(sys.argv) > 1 else "/tmp/live-transcript.txt"
 PORT = 8234
 
+MEETING_START_RE = re.compile(r"^--- MEETING START: (.+?) @ .+ ---$")
+MEETING_END_RE = re.compile(r"^--- MEETING END ---$")
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Live Transcript</title>
+<title>{title}</title>
 <style>
   body {{
     font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -57,7 +67,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Live Transcript</h1>
+<h1>{heading}</h1>
 <div id="content">{content}</div>
 <div id="bottom"></div>
 <script>
@@ -83,6 +93,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </script>
 </body>
 </html>"""
+
+IDLE_MSG = '<p class="empty">No active meeting — transcript will appear when a meeting starts</p>'
 
 
 def parse_srt(raw: str) -> list[tuple[str, str]]:
@@ -111,36 +123,74 @@ def parse_srt(raw: str) -> list[tuple[str, str]]:
     return segments
 
 
+def get_active_meeting_content(raw: str) -> tuple[str | None, str]:
+    """Find the last MEETING START marker and return (meeting_name, content_after_marker).
+
+    Returns (None, "") if no active meeting (no marker, or last marker is END).
+    """
+    lines = raw.split("\n")
+
+    # Walk backwards to find the last marker
+    last_start_idx = None
+    meeting_name = None
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if MEETING_END_RE.match(stripped):
+            # Last marker is END — no active meeting
+            return None, ""
+        m = MEETING_START_RE.match(stripped)
+        if m:
+            last_start_idx = i
+            meeting_name = m.group(1)
+            break
+
+    if last_start_idx is None:
+        return None, ""
+
+    # Return content after the start marker
+    return meeting_name, "\n".join(lines[last_start_idx + 1:])
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def _read_content(self):
+    def _read_content(self) -> tuple[str | None, str]:
+        """Return (meeting_name, html_content)."""
         if not os.path.exists(TRANSCRIPT_FILE):
-            return '<p class="empty">Waiting for audio...</p>'
+            return None, IDLE_MSG
         with open(TRANSCRIPT_FILE, "r", errors="replace") as f:
             raw = f.read()
-        segments = parse_srt(raw)
+
+        meeting_name, meeting_content = get_active_meeting_content(raw)
+        if meeting_name is None:
+            return None, IDLE_MSG
+
+        segments = parse_srt(meeting_content)
         if not segments:
-            return '<p class="empty">Waiting for audio...</p>'
+            return meeting_name, '<p class="empty">Listening...</p>'
+
         parts = []
         for ts, text in segments:
             ts_html = f'<span class="timestamp">{html.escape(ts)}</span>'
             parts.append(f'<div class="line">{ts_html}{html.escape(text)}</div>')
-        return "\n".join(parts)
+        return meeting_name, "\n".join(parts)
 
     def do_GET(self):
+        meeting_name, content = self._read_content()
         if self.path == "/content":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(self._read_content().encode("utf-8"))
+            self.wfile.write(content.encode("utf-8"))
         else:
+            title = f"Live: {meeting_name}" if meeting_name else "Live Transcript"
+            heading = f"Live Transcript — {html.escape(meeting_name)}" if meeting_name else "Live Transcript"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            content = self._read_content()
-            self.wfile.write(HTML_TEMPLATE.format(content=content).encode("utf-8"))
+            page = HTML_TEMPLATE.format(title=html.escape(title), heading=heading, content=content)
+            self.wfile.write(page.encode("utf-8"))
 
 
 if __name__ == "__main__":

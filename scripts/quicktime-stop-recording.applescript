@@ -168,10 +168,15 @@ on run
         do shell script "rm -f " & quoted form of activeSession
         do shell script "rm -f " & quoted form of metadataFile
 
+        -- Report to script dashboard
+        try
+            do shell script "source $HOME/Repos/personal/script-dashboard/lib/report.sh 2>/dev/null && report_start 'meeting-stop' 'meeting' 'Saved: " & fileName & "' && report_log 'Recording saved: " & fileName & "' && report_end 0 || true"
+        end try
+
         display notification "Saved: " & fileName with title "Meeting Recorder"
         do shell script "echo 'Recording saved: " & finalPath & "' >> /tmp/meeting-recorder.log"
 
-        -- Stop live transcript
+        -- Signal meeting end to live transcript (yap keeps running for next meeting)
         try
             do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/stop-live-transcript.sh >> /tmp/meeting-recorder.log 2>&1"
         on error liveErr

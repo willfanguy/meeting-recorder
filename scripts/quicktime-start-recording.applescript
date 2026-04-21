@@ -74,8 +74,9 @@ on run
 
         do shell script "echo " & startHHMM & " > /tmp/meeting-recorder-start-time.txt"
 
-        -- Start live transcript via Terminal.app so yap inherits its TCC permissions
-        -- (MeetingBar's do shell script context lacks Microphone + Screen Recording)
+        -- Signal meeting start to the persistent live transcript daemon.
+        -- Writes a marker to the transcript file (sandbox-safe file append).
+        -- If yap isn't running, signal-meeting-start.sh launches it via Terminal.app.
         try
             set meetingLabel to "Meeting"
             try
@@ -84,11 +85,14 @@ on run
                     set meetingLabel to do shell script "python3 -c \"import json; print(json.load(open('" & activeSession & "'))['title'])\""
                 end if
             end try
-            tell application "Terminal"
-                do script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/start-live-transcript.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
-            end tell
+            do shell script "${MEETING_RECORDER_DIR:-$HOME/Repos/personal/meeting-recorder}/scripts/signal-meeting-start.sh " & quoted form of meetingLabel & " >> /tmp/meeting-recorder.log 2>&1"
         on error liveErr
-            do shell script "echo 'Live transcript start error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
+            do shell script "echo 'Live transcript signal error (non-fatal): " & liveErr & "' >> /tmp/meeting-recorder.log"
+        end try
+
+        -- Report to script dashboard
+        try
+            do shell script "source $HOME/Repos/personal/script-dashboard/lib/report.sh 2>/dev/null && report_start 'meeting-start' 'meeting' 'Recording: " & meetingLabel & "' && report_log 'Recording started (PID " & recorderPid & ")' && report_end 0 || true"
         end try
 
         display notification "Recording started" with title "Meeting Recorder" sound name "Ping"

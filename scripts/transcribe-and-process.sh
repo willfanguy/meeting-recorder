@@ -11,7 +11,21 @@ if [ -z "$AUDIO_FILE" ] || [ ! -f "$AUDIO_FILE" ]; then
     exit 1
 fi
 
-echo "Processing: $AUDIO_FILE" >> /tmp/meeting-recorder.log
+# Report to script dashboard
+REPORT_LIB="${REPORT_LIB:-$HOME/Repos/personal/script-dashboard/lib/report.sh}"
+if [ -f "$REPORT_LIB" ]; then
+    source "$REPORT_LIB"
+    report_start "transcribe-and-process" "meeting" "Transcribe and process $(basename "$AUDIO_FILE")"
+    _SD_TRANSCRIBE_REPORTING=1
+fi
+
+# Log to both meeting-recorder log and script dashboard
+_log() {
+    echo "$*" >> /tmp/meeting-recorder.log
+    [ "${_SD_TRANSCRIBE_REPORTING:-0}" = "1" ] && report_log "$*"
+}
+
+_log "Processing: $AUDIO_FILE"
 
 # Configuration
 WHISPER_MODEL_LARGE="$HOME/.local/share/whisper-models/ggml-large-v3-q5_0.bin"
@@ -586,12 +600,12 @@ if [ -n "$PART_FILES" ]; then
 fi
 
 # Convert m4a to wav for Whisper
-echo "Converting to WAV..." >> /tmp/meeting-recorder.log
+_log "Converting to WAV..."
 ffmpeg -y -i "$AUDIO_FILE" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV_FILE" 2>> /tmp/meeting-recorder.log
 
 # Transcribe with Whisper
 MODEL_NAME=$(basename "$WHISPER_MODEL" .bin | sed 's/ggml-//')
-echo "Transcribing with Whisper ($MODEL_NAME)..." >> /tmp/meeting-recorder.log
+_log "Transcribing with Whisper ($MODEL_NAME)..."
 osascript -e "display notification \"Transcribing with Whisper ($MODEL_NAME)...\" with title \"Meeting Recorder\""
 
 if [ ! -f "$WHISPER_MODEL" ]; then
@@ -680,12 +694,13 @@ else
 fi
 
 if [ ! -f "$TRANSCRIPT_FILE" ]; then
-    echo "Error: Transcription failed" >> /tmp/meeting-recorder.log
+    _log "Error: Transcription failed"
+    [ "${_SD_TRANSCRIBE_REPORTING:-0}" = "1" ] && report_end 1
     osascript -e 'display notification "Transcription failed!" with title "Meeting Recorder Error"'
     exit 1
 fi
 
-echo "Transcription complete: $TRANSCRIPT_FILE" >> /tmp/meeting-recorder.log
+_log "Transcription complete: $(basename "$TRANSCRIPT_FILE")"
 
 # Post-transcription hallucination detection and remediation
 SRT_FILE="${DIRNAME}/${BASENAME}.srt"
@@ -702,7 +717,7 @@ fi
 # Apply domain-specific corrections (fix common transcription errors)
 CORRECTIONS_SCRIPT="$(dirname "$0")/apply-domain-corrections.py"
 if [ -f "$CORRECTIONS_SCRIPT" ]; then
-    echo "Applying domain corrections..." >> /tmp/meeting-recorder.log
+    _log "Applying domain corrections..."
     /opt/homebrew/bin/python3 "$CORRECTIONS_SCRIPT" "$TRANSCRIPT_FILE" 2>> /tmp/meeting-recorder.log
 else
     echo "Domain corrections script not found, skipping" >> /tmp/meeting-recorder.log
@@ -715,7 +730,7 @@ SRT_FOR_DIARIZE="${DIRNAME}/${BASENAME}.srt"
 PROJECT_DIR="$(dirname "$(dirname "$0")")"
 
 if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
-    echo "Running speaker diarization..." >> /tmp/meeting-recorder.log
+    _log "Running speaker diarization..."
     osascript -e 'display notification "Running speaker diarization..." with title "Meeting Recorder"'
 
     # Load HF token from config.sh
@@ -745,7 +760,7 @@ if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
 
     # Run with 10-minute timeout (perl alarm — macOS has no timeout command)
     if perl -e 'alarm 600; exec @ARGV' -- "$DIARIZE_VENV" "${DIARIZE_ARGS[@]}" >> /tmp/meeting-recorder.log 2>&1; then
-        echo "Speaker diarization complete" >> /tmp/meeting-recorder.log
+        _log "Speaker diarization complete"
     else
         echo "Speaker diarization failed or timed out — continuing with unlabeled transcript" >> /tmp/meeting-recorder.log
     fi
@@ -846,14 +861,25 @@ fi
 # Clean up metadata file
 rm -f "$METADATA_FILE"
 
-echo "Meeting note created: $NOTE_FILE" >> /tmp/meeting-recorder.log
+_log "Meeting note created: $(basename "$NOTE_FILE")"
 osascript -e 'display notification "Transcription complete!" with title "Meeting Recorder"'
+
+# Finalize transcription dashboard report (meeting-intelligence runs as a separate report)
+[ "${_SD_TRANSCRIBE_REPORTING:-0}" = "1" ] && report_end 0
 
 # Run meeting intelligence processor, then sync to total-recall once enriched
 echo "Running meeting intelligence..." >> /tmp/meeting-recorder.log
 osascript -e 'display notification "Running AI analysis..." with title "Meeting Recorder"'
 
 (
+    # Report meeting-intelligence as a separate dashboard run
+    _MI_REPORT_LIB="${REPORT_LIB:-$HOME/Repos/personal/script-dashboard/lib/report.sh}"
+    if [ -f "$_MI_REPORT_LIB" ]; then
+        source "$_MI_REPORT_LIB"
+        report_start "meeting-intelligence" "meeting" "AI analysis of $(basename "$NOTE_FILE")"
+        _MI_REPORTING=1
+    fi
+
     unset CLAUDECODE
     MAX_RETRIES=3
     RETRY_DELAY=30
@@ -878,6 +904,7 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
     done
 
     if [ "$SUCCESS" = true ]; then
+        [ "${_MI_REPORTING:-0}" = "1" ] && report_log "Meeting intelligence completed (attempt $ATTEMPT)" && report_end 0
         osascript -e 'display notification "AI analysis complete — run meeting-tasks-extractor to review tasks" with title "Meeting Recorder" sound name "Glass"'
         echo "Meeting intelligence completed successfully (attempt $ATTEMPT)" >> /tmp/meeting-recorder.log
 
@@ -894,6 +921,7 @@ osascript -e 'display notification "Running AI analysis..." with title "Meeting 
             echo "[total-recall] rsync to Mac mini FAILED for: $NOTE_BASENAME" >> /tmp/meeting-recorder.log
         fi
     else
+        [ "${_MI_REPORTING:-0}" = "1" ] && report_log "Meeting intelligence failed after $MAX_RETRIES attempts" && report_end 1
         osascript -e 'display notification "AI analysis failed after 3 attempts - check logs" with title "Meeting Recorder"'
         echo "Meeting intelligence failed after $MAX_RETRIES attempts" >> /tmp/meeting-recorder.log
     fi
