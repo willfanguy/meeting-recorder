@@ -194,7 +194,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = http.server.HTTPServer(("localhost", PORT), Handler)
+    server = http.server.ThreadingHTTPServer(("localhost", PORT), Handler)
     print(f"Live transcript viewer at http://localhost:{PORT}")
     try:
         server.serve_forever()
