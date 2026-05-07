@@ -25,8 +25,14 @@ on meetingStart(eventId, title, allday, startDate, endDate, eventLocation, repea
 
 		do shell script "echo 'MeetingBar event: " & dateStr & " " & timeStr & "' >> /tmp/meeting-recorder.log"
 
-		-- Trigger recording
-		set scriptPath to homePath & "Repos/personal/meeting-recorder/scripts/quicktime-start-recording.applescript"
+		-- Trigger recording via Raycast (TCC-aware redirect).
+		-- meetingbar-trigger-recording.applescript fires a raycast:// URL, which
+		-- hands control to Raycast (approved mic TCC). Raycast then runs the
+		-- full recording chain (raycast/start-meeting-recording.sh → osascript →
+		-- quicktime-start-recording.applescript → meeting-recorder --include-mic).
+		-- Fixes silent mic capture caused by MeetingBar lacking NSMicrophoneUsageDescription.
+		-- See: ~/Vaults/HigherJump/4. Resources/Work Log/Tasks/Fix MeetingBar mic TCC permission.md
+		set scriptPath to homePath & "Repos/personal/meeting-recorder/scripts/meetingbar-trigger-recording.applescript"
 		do shell script "osascript " & quoted form of scriptPath & " > /tmp/meeting-recorder-start.log 2>&1 &"
 
 	on error errMsg

@@ -25,14 +25,30 @@ on run
         do shell script "rm -f " & quoted form of tempAudioFile & " " & quoted form of pidFile
 
         -- Start recording via Swift CLI (Core Audio Taps — no BlackHole/aggregate device needed)
-        -- Falls back to ffmpeg if Swift CLI is not installed
+        -- Falls back to ffmpeg if Swift CLI is not installed.
+        --
+        -- TCC note: the Swift CLI inherits mic permission from its responsible-process
+        -- ancestor. When invoked via Raycast (manual trigger OR MeetingBar's
+        -- meetingbar-trigger-recording.applescript which redirects to Raycast via
+        -- raycast://script-commands/start-meeting-recording), the chain is
+        -- Raycast → raycast/start-meeting-recording.sh → osascript → this script → recorder.
+        -- Raycast has mic TCC so the recorder captures Will's voice correctly.
+        -- When invoked directly by MeetingBar (bypassing Raycast), mic is silently
+        -- denied because MeetingBar lacks NSMicrophoneUsageDescription.
+        -- See: ~/Vaults/HigherJump/4. Resources/Work Log/Tasks/Fix MeetingBar mic TCC permission.md
         set recorderBin to do shell script "PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH command -v meeting-recorder 2>/dev/null || echo ''"
         if recorderBin is "" then
             -- Fallback: ffmpeg with aggregate audio device
             do shell script "/opt/homebrew/bin/ffmpeg -nostdin -y -f avfoundation -i ':Meeting Recording Input' -af 'pan=1c|c0=c0+c1+c2+c3,aresample=async=1,alimiter=limit=0.9' -c:a aac -b:a 128k " & quoted form of tempAudioFile & " > /tmp/ffmpeg-recording.log 2>&1 & echo $! > " & quoted form of pidFile
             do shell script "echo 'Using ffmpeg fallback (meeting-recorder CLI not found)' >> /tmp/meeting-recorder.log"
         else
-            do shell script recorderBin & " --output " & quoted form of tempAudioFile & " --pid-file " & quoted form of pidFile & " --include-mic > /tmp/meeting-recorder-cli.log 2>&1 &"
+            -- --mic-gain 1.0: override the Swift CLI default of 0.5. Combined with
+            -- the MicrophoneCapture.swift downmix (which halves a mono-signal stereo
+            -- mic by averaging ch0 + silent ch1), the 0.5 default crushed Will's
+            -- voice to ~25% amplitude. 1.0 brings it to ~50% — still below pre-4/09
+            -- levels but clearly audible for whisper/VAD/diarization. See task note:
+            -- "Verify meeting recorder mic fix" (due 2026-04-23).
+            do shell script recorderBin & " --output " & quoted form of tempAudioFile & " --pid-file " & quoted form of pidFile & " --include-mic --mic-gain 1.0 > /tmp/meeting-recorder-cli.log 2>&1 &"
         end if
         delay 1
 
