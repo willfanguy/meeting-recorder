@@ -172,6 +172,18 @@ Applied to meeting titles for filenames:
 3. Collapse multiple spaces/dashes
 4. Trim leading/trailing spaces and dashes
 
+## Screenshot Integration
+
+When Will takes screenshots during a meeting, `transcribe-and-process.sh` finds them by timestamp and attaches them to the meeting note.
+
+**Sources scanned:** `~/Desktop/` and `~/Desktop/Screenshots/` (Cleanshot saves to the latter; native macOS uses the former). Both use the same `Screenshot – YYYY-MM-DD – HH.MM.SS[@2x].png` naming.
+
+**Matching window:** meeting start − 2 min through meeting stop + 10 min. The stop reference is captured at the top of the script (variable `MEETING_STOP_EPOCH`) so it stays anchored to actual meeting end, not to the post-transcription wall clock.
+
+**Attachment destination:** `~/Vaults/HigherJump/6. Media/` (the vault's configured `attachmentFolderPath`). Files are **copied**, never moved — originals on the Desktop are untouched. Embeds use bare wikilinks (`![[Screenshot – ... .png]]`) which Obsidian resolves through the global attachment folder.
+
+**Idempotency:** if a file with the same name already exists in `6. Media/` and the same byte size, the copy is skipped. If the size differs, a 5-digit suffix is appended to avoid clobbering an unrelated file.
+
 ## Zoom Team Chat Integration
 
 When Will saves the team chat from a Zoom meeting, it's stored at:
@@ -258,6 +270,31 @@ Real-time transcription running alongside the recording for catch-up during meet
 - **PTY trick**: yap is wrapped in `script -q` to give it a PTY — without this, yap block-buffers and text only appears every ~30 seconds
 - **PID files**: `/tmp/meeting-recorder-live-pid.txt` (yap), `/tmp/meeting-recorder-live-viewer-pid.txt` (viewer)
 
+### Backfill Diarization (one-shot)
+
+`scripts/backfill-diarization.py` re-runs diarize-transcript.py on every
+recording with an existing `.diarization.json` sidecar, applying the soft
+speaker bounds. Updates each meeting note's `## Transcript` section in place,
+preserving the AI summary and other curated content above it.
+
+- **Invoke**: `scripts/.venv/bin/python scripts/backfill-diarization.py [--dry-run]`
+- **Scheduled**: launchd plist `~/Library/LaunchAgents/com.user.diarization-backfill.plist` fires daily at 21:00, no-ops after first successful run via `/tmp/diarization-backfill.done` marker
+- **Wrapper**: `scripts/run-backfill-once.sh` adds `caffeinate -i` to prevent system sleep during the ~3hr run
+- **Estimated runtime**: ~3–4 min/meeting on MPS, ~3hr for 51 recordings
+
+### Enroll-from-Summary (closes AI → enrollment loop)
+
+`scripts/enroll-from-summary.py` parses meeting notes' `Speaker Identification`
+table and enrolls voices for high-confidence rows automatically. Closes the
+loop where meeting-intelligence-processor identifies "Speaker D = Tony Hawke"
+from context, but enrollment was previously a copy-paste step.
+
+- **Invoke**: `scripts/.venv/bin/python scripts/enroll-from-summary.py --recent 10 [--dry-run]`
+- **Auto-enrolls**: only `confidence == "high"` rows
+- **Skips**: rows with identity in `{unclear, unknown, ?}`, "Ali" (manual review — Ali Alami left Glassdoor; new mentions may be misheard "Alli")
+- **Normalizes**: "Phil Mansour" → "Phil", "Ellie"/"Allie" → "Alli" (extend `NAME_NORMALIZATION` for new aliases)
+- **After backfill**: AI summary tables become stale relative to new cluster labels — re-run meeting-intelligence-processor on key meetings before invoking this
+
 ### Speaker Diarization (pyannote-audio)
 
 After domain corrections, the pipeline optionally runs speaker diarization to label who said what.
@@ -271,7 +308,10 @@ After domain corrections, the pipeline optionally runs speaker diarization to la
 - **Embeddings**: 256-dim clustering centroids persisted in `.diarization.json` sidecar for speaker identification
 - **Identification**: `scripts/speaker_library.py` matches embeddings against enrolled speakers via cosine similarity (threshold 0.75)
 - **Performance**: ~3-8 minutes on CPU, faster with MPS GPU acceleration (Apple Silicon)
-- **Hint**: If MeetingBar provides `attendee_count`, it's passed as `--num-speakers` to improve accuracy
+- **Speaker count hints**: If MeetingBar provides `attendee_count`:
+  - **2 attendees** (1:1) → `--num-speakers 2` (hard constraint)
+  - **3+ attendees** → `--min-speakers 2 --max-speakers min(N, 8)` (soft bounds; cap at 8 because empirically even 15-attendee standups rarely have >8 active speakers, and forcing a higher count makes pyannote over-segment one voice across multiple clusters)
+- **Dominance threshold**: 70% (was 90%). When an SRT entry's time is dominated ≥70% by one speaker, the whole utterance is attributed to that speaker — preventing brief backchannel slivers ("uh", "yeah") from triggering one-word "Speaker X" fragments mid-utterance
 
 ## Archived Scripts
 
