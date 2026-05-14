@@ -199,3 +199,58 @@ def test_assign_speakers_single_dominant(diarize_mod):
     assert len(labeled) == 2
     assert labeled[0][2] == "SPEAKER_00"
     assert labeled[1][2] == "SPEAKER_01"
+
+
+def test_assign_speakers_backchannel_does_not_split(diarize_mod):
+    """Verify a brief backchannel sliver doesn't split a single utterance.
+
+    A 4-second SRT entry where SPEAKER_00 dominates 75% of the time should
+    be attributed entirely to SPEAKER_00, not split into two speaker turns.
+    Regression test for the one-word "Speaker X: Happy" / "Speaker Y: Friday"
+    fragmentation pattern observed in noisy standups when the dominance
+    threshold was 0.9.
+    """
+    # SPEAKER_00 talks for 3 seconds, SPEAKER_01 interjects for 1 second
+    tracks = [
+        (0.0, 3.0, "SPEAKER_00"),
+        (3.0, 4.0, "SPEAKER_01"),
+    ]
+    diarization = MockAnnotation(tracks)
+    # One Whisper SRT entry covering the whole 4 seconds
+    srt_entries = [
+        (1, 0.0, 4.0, "I think we should ship this Friday"),
+    ]
+
+    labeled = diarize_mod.assign_speakers(srt_entries, diarization)
+    # At dominance 0.75 (>= 0.7 threshold), the entry should NOT split —
+    # the whole utterance is attributed to SPEAKER_00.
+    assert len(labeled) == 1, (
+        f"Expected single attribution, got {len(labeled)}: "
+        f"{[(s, e, sp, t) for s, e, sp, t in labeled]}"
+    )
+    assert labeled[0][2] == "SPEAKER_00"
+    assert labeled[0][3] == "I think we should ship this Friday"
+
+
+def test_assign_speakers_genuine_split_still_splits(diarize_mod):
+    """Verify a genuine 50/50 split still gets word-level attribution.
+
+    When two speakers each cover ~50% of an SRT entry, neither dominates
+    above the 0.7 threshold, so the proportional word-splitting path kicks
+    in — preserving the ability to correctly attribute genuinely shared
+    utterances (rare but real).
+    """
+    tracks = [
+        (0.0, 2.0, "SPEAKER_00"),
+        (2.0, 4.0, "SPEAKER_01"),
+    ]
+    diarization = MockAnnotation(tracks)
+    srt_entries = [
+        (1, 0.0, 4.0, "one two three four five six seven eight"),
+    ]
+
+    labeled = diarize_mod.assign_speakers(srt_entries, diarization)
+    assert len(labeled) == 2
+    speakers = [seg[2] for seg in labeled]
+    assert "SPEAKER_00" in speakers
+    assert "SPEAKER_01" in speakers

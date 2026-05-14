@@ -114,7 +114,13 @@ def assign_speakers(srt_entries, diarization):
         dominant_speaker = max(speaker_times, key=speaker_times.get)
         dominant_fraction = speaker_times[dominant_speaker] / srt_duration if srt_duration > 0 else 1
 
-        if dominant_fraction >= 0.9 or len(speaker_times) == 1:
+        # Dominance threshold: an SRT entry where one speaker covers ≥70% of
+        # the time is attributed entirely to that speaker. Set lower than the
+        # naïve 0.9 because brief backchannel slivers ("uh", "yeah") in a
+        # 2-second utterance shouldn't trigger word-level splitting — that
+        # produced one-word "Speaker X: Happy" / "Speaker Y: Friday" fragments
+        # in noisy standups.
+        if dominant_fraction >= 0.7 or len(speaker_times) == 1:
             # Single speaker dominates — assign full text
             labeled_segments.append((start, end, dominant_speaker, text))
         else:
@@ -259,7 +265,11 @@ def main():
     parser.add_argument("srt_file", help="Path to SRT subtitle file")
     parser.add_argument("txt_file", help="Path to TXT transcript file")
     parser.add_argument("--num-speakers", type=int, default=None,
-                        help="Expected number of speakers (improves accuracy)")
+                        help="Exact number of speakers — hard constraint (use only when known, e.g. 1:1s)")
+    parser.add_argument("--min-speakers", type=int, default=None,
+                        help="Soft lower bound on speaker count (use for meetings of unknown active-speaker count)")
+    parser.add_argument("--max-speakers", type=int, default=None,
+                        help="Soft upper bound on speaker count (use for meetings of unknown active-speaker count)")
     parser.add_argument("--participants", type=str, default=None,
                         help="Comma-separated participant names (soft prior for identification)")
     parser.add_argument("--speaker-library", type=str, default=None,
@@ -306,7 +316,16 @@ def main():
         diarize_kwargs = {}
         if args.num_speakers and args.num_speakers > 0:
             diarize_kwargs["num_speakers"] = args.num_speakers
-            log(f"Speaker count hint: {args.num_speakers}")
+            log(f"Speaker count hint (exact): {args.num_speakers}")
+        else:
+            if args.min_speakers and args.min_speakers > 0:
+                diarize_kwargs["min_speakers"] = args.min_speakers
+            if args.max_speakers and args.max_speakers > 0:
+                diarize_kwargs["max_speakers"] = args.max_speakers
+            if "min_speakers" in diarize_kwargs or "max_speakers" in diarize_kwargs:
+                log(f"Speaker count hint (soft): "
+                    f"min={diarize_kwargs.get('min_speakers', 'auto')}, "
+                    f"max={diarize_kwargs.get('max_speakers', 'auto')}")
 
         result = pipeline(args.wav_file, **diarize_kwargs)
 

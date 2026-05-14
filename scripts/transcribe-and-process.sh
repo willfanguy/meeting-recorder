@@ -27,11 +27,17 @@ _log() {
 
 _log "Processing: $AUDIO_FILE"
 
+# Anchor for meeting-end-relative time windows. Captured here (early in the
+# script, right after stop-recording triggers it) so later screenshot matching
+# isn't skewed by transcription duration.
+MEETING_STOP_EPOCH=$(date +%s)
+
 # Configuration
 WHISPER_MODEL_LARGE="$HOME/.local/share/whisper-models/ggml-large-v3-q5_0.bin"
 WHISPER_MODEL_MEDIUM="$HOME/.local/share/whisper-models/ggml-medium-q5_0.bin"
 WHISPER_VAD_MODEL="$HOME/.local/share/whisper-models/ggml-silero-v6.2.0.bin"
 MEETING_NOTES_DIR="$HOME/Vaults/HigherJump/4. Resources/Meeting Notes"
+VAULT_MEDIA_DIR="$HOME/Vaults/HigherJump/6. Media"
 CONFIG_FILE="$HOME/Repos/personal/productivity/config/config.json"
 
 # Extract filename components
@@ -441,6 +447,48 @@ rebuild_txt() {
     echo "Rebuilt .txt from spliced SRT" >> /tmp/meeting-recorder.log
 }
 
+# Look for screenshots taken during the meeting window.
+# Scans ~/Desktop and ~/Desktop/Screenshots (Cleanshot writes there too,
+# using the same "Screenshot – YYYY-MM-DD – HH.MM.SS[@2x].png" naming as
+# native macOS). Window: meeting start - 2 min, meeting stop + 10 min.
+# Prints matching paths one per line, sorted chronologically by filename.
+find_meeting_screenshots() {
+    local date_part="$1"   # YYYY-MM-DD
+    local time_part="$2"   # HHMM
+    local stop_epoch="$3"  # epoch seconds, captured at script start
+
+    local start_epoch
+    start_epoch=$(date -j -f "%Y-%m-%d %H%M" "$date_part $time_part" +%s 2>/dev/null) || return 1
+
+    local window_start=$(( start_epoch - 120 ))
+    local window_end=$(( stop_epoch + 600 ))
+
+    local sources=("$HOME/Desktop" "$HOME/Desktop/Screenshots")
+    local matches=()
+    local src f name fdate fhms ftime f_epoch
+
+    for src in "${sources[@]}"; do
+        [ -d "$src" ] || continue
+        while IFS= read -r -d '' f; do
+            name=$(basename "$f")
+            # Pull first YYYY-MM-DD and HH.MM.SS from filename — robust to
+            # whatever separator chars Apple/Cleanshot use (em-dash today).
+            fdate=$(echo "$name" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+            fhms=$(echo "$name" | grep -oE '[0-9]{2}\.[0-9]{2}\.[0-9]{2}' | head -1)
+            [ -z "$fdate" ] && continue
+            [ -z "$fhms" ] && continue
+            ftime="${fhms//./:}"
+            f_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$fdate $ftime" +%s 2>/dev/null) || continue
+            if [ "$f_epoch" -ge "$window_start" ] && [ "$f_epoch" -le "$window_end" ]; then
+                matches+=("$f")
+            fi
+        done < <(find "$src" -maxdepth 1 -type f -iname "Screenshot*.png" -print0 2>/dev/null)
+    done
+
+    [ ${#matches[@]} -eq 0 ] && return 1
+    printf '%s\n' "${matches[@]}" | sort
+}
+
 # Look for matching Zoom team chat
 find_zoom_chat() {
     local date_part="$1"  # YYYY-MM-DD
@@ -661,7 +709,13 @@ if [ "${DURATION_SECS:-0}" -gt "$CHUNK_THRESHOLD" ]; then
     > "$TRANSCRIPT_FILE"
     SRT_FILE="${DIRNAME}/${BASENAME}.srt"
     > "$SRT_FILE"
+    CHUNK_IDX_FOR_LOG=0
     for CHUNK in "$CHUNK_DIR"/chunk_*.wav; do
+        CHUNK_IDX_FOR_LOG=$((CHUNK_IDX_FOR_LOG + 1))
+        # Beacon: keeps the dashboard's stale-run sweep from killing long
+        # transcriptions. The sweep checks idle time since the last report_log
+        # call; without per-chunk pings, whisper can run >30 min silently.
+        _log "Transcribing chunk $CHUNK_IDX_FOR_LOG/$CHUNK_NUM..."
         whisper-cli "${WHISPER_ARGS[@]}" -f "$CHUNK" 2>> /tmp/meeting-recorder.log
         if [ -f "${CHUNK}.txt" ]; then
             cat "${CHUNK}.txt" >> "$TRANSCRIPT_FILE"
@@ -741,15 +795,22 @@ if [ -f "$DIARIZE_SCRIPT" ] && [ -x "$DIARIZE_VENV" ]; then
 
     # Build diarization arguments
     DIARIZE_ARGS=("$DIARIZE_SCRIPT" "$WAV_FILE" "$SRT_FOR_DIARIZE" "$TRANSCRIPT_FILE")
-    if [ -n "$ATTENDEE_COUNT" ] && [ "$ATTENDEE_COUNT" -gt 1 ] 2>/dev/null; then
-        # Cap at 12 — large org meetings invite 50+ but rarely have >12 active speakers.
-        # Uncapped attendee counts cause pyannote to over-segment.
-        SPEAKER_HINT="$ATTENDEE_COUNT"
-        if [ "$SPEAKER_HINT" -gt 12 ] 2>/dev/null; then
-            echo "Capping speaker hint from $SPEAKER_HINT to 12 (large meeting)" >> /tmp/meeting-recorder.log
-            SPEAKER_HINT=12
+    if [ -n "$ATTENDEE_COUNT" ] && [ "$ATTENDEE_COUNT" -ge 2 ] 2>/dev/null; then
+        if [ "$ATTENDEE_COUNT" -eq 2 ] 2>/dev/null; then
+            # 1:1 — exact known count, hard constraint
+            DIARIZE_ARGS+=(--num-speakers 2)
+        else
+            # Larger meeting — soft upper bound. Cap at 8 because empirically
+            # even 15-attendee standups rarely have >8 active speakers, and
+            # forcing a higher count makes pyannote over-segment one voice
+            # across multiple clusters.
+            SPEAKER_MAX="$ATTENDEE_COUNT"
+            if [ "$SPEAKER_MAX" -gt 8 ] 2>/dev/null; then
+                echo "Capping max-speakers from $SPEAKER_MAX to 8 (large meeting)" >> /tmp/meeting-recorder.log
+                SPEAKER_MAX=8
+            fi
+            DIARIZE_ARGS+=(--min-speakers 2 --max-speakers "$SPEAKER_MAX")
         fi
-        DIARIZE_ARGS+=(--num-speakers "$SPEAKER_HINT")
     fi
 
     # Speaker identification via embedding library
@@ -784,6 +845,15 @@ ZOOM_CHAT_FILE=$(find_zoom_chat "$DATE_PART" "$TIME_PART" "$TITLE_PART" 2>/dev/n
 if [ -n "$ZOOM_CHAT_FILE" ] && [ -f "$ZOOM_CHAT_FILE" ]; then
     echo "Found Zoom chat: $ZOOM_CHAT_FILE" >> /tmp/meeting-recorder.log
     ZOOM_CHAT_CONTENT=$(cat "$ZOOM_CHAT_FILE")
+fi
+
+# Look for screenshots taken during the meeting (Desktop + Cleanshot folder)
+SCREENSHOT_FILES=()
+while IFS= read -r _shot_path; do
+    [ -n "$_shot_path" ] && SCREENSHOT_FILES+=("$_shot_path")
+done < <(find_meeting_screenshots "$DATE_PART" "$TIME_PART" "$MEETING_STOP_EPOCH" 2>/dev/null || true)
+if [ ${#SCREENSHOT_FILES[@]} -gt 0 ]; then
+    _log "Found ${#SCREENSHOT_FILES[@]} screenshot(s) in meeting window"
 fi
 
 # Build optional frontmatter fields
@@ -856,6 +926,39 @@ if [ -n "$ZOOM_CHAT_CONTENT" ]; then
 
 CHATEOF
     echo "$ZOOM_CHAT_CONTENT" >> "$NOTE_FILE"
+fi
+
+# Append matched screenshots if any. Copies originals into the vault's
+# global attachment folder ("6. Media") under their original filenames so
+# Obsidian's wiki-link resolver finds them with bare ![[name.png]] embeds.
+# Originals on the Desktop are never moved or deleted.
+if [ ${#SCREENSHOT_FILES[@]} -gt 0 ]; then
+    mkdir -p "$VAULT_MEDIA_DIR"
+    cat >> "$NOTE_FILE" << 'SCREENSHOTSEOF'
+
+---
+
+## Screenshots
+
+SCREENSHOTSEOF
+    for _shot_src in "${SCREENSHOT_FILES[@]}"; do
+        _shot_name=$(basename "$_shot_src")
+        _shot_dest="$VAULT_MEDIA_DIR/$_shot_name"
+        if [ ! -f "$_shot_dest" ]; then
+            cp "$_shot_src" "$_shot_dest"
+            _log "Copied screenshot to vault: $_shot_name"
+        elif [ "$(stat -f %z "$_shot_src" 2>/dev/null)" != "$(stat -f %z "$_shot_dest" 2>/dev/null)" ]; then
+            # Same name, different size — preserve both with a suffix
+            _shot_name="${_shot_name%.*}-$(date +%s%N | tail -c 6).${_shot_name##*.}"
+            _shot_dest="$VAULT_MEDIA_DIR/$_shot_name"
+            cp "$_shot_src" "$_shot_dest"
+            _log "Copied screenshot to vault (renamed to avoid collision): $_shot_name"
+        else
+            _log "Screenshot already in vault: $_shot_name"
+        fi
+        echo "![[$_shot_name]]" >> "$NOTE_FILE"
+    done
+    unset _shot_src _shot_name _shot_dest
 fi
 
 # Clean up metadata file
